@@ -57,7 +57,7 @@ public:
      */
     Cube DoRotation(MoveAction action) const;
 
-private:
+   private:
     /******************************************
      * 数据成员
      ******************************************/
@@ -101,7 +101,7 @@ private:
  * 无效魔方操作异常
  */
 class InvalidCubeOperationException : public MagicCubeException {
-public:
+   public:
     InvalidCubeOperationException(const std::string& msg) 
         : MagicCubeException("无效的魔方操作: " + msg) {}
 };

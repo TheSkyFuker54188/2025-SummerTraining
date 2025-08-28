@@ -135,8 +135,8 @@ int main(int argc, char* argv[]) {
         }
         catch (const InputException& e) {
             std::cerr << "输入错误: " << e.what() << std::endl;
-            return 1;
-        }
+        return 1;
+    }
         
         std::cout << "┌─────────────────────────────┐" << std::endl;
         std::cout << "│      魔方求解程序启动       │" << std::endl;
@@ -145,7 +145,7 @@ int main(int argc, char* argv[]) {
         // 创建求解器和任务系统
         std::unique_ptr<TaskSystem<PCubeTask>> 任务系统(new SingleThreadTaskSystem<PCubeTask>());
         std::unique_ptr<CubeSolver> 求解器(new CubeSolver(选项.searchDepth, 选项.debugMode, true));
-        
+
         // 创建魔方初始状态
         Cube 初始魔方(魔方描述);
         
@@ -154,7 +154,7 @@ int main(int argc, char* argv[]) {
             std::move(初始魔方), 
             std::vector<MoveAction>()
         );
-        
+
         // 开始求解并计时
         std::cout << "【开始求解】最大深度: " << 选项.searchDepth << std::endl;
         auto 开始时间 = std::chrono::high_resolution_clock::now();
@@ -167,7 +167,7 @@ int main(int argc, char* argv[]) {
         // 输出求解结果
         std::cout << "【求解完成】耗时: " << 耗时 << " 毫秒" << std::endl;
         std::cout << "┌─────────────────────────────┐" << std::endl;
-        
+
         if (求解器->HasSolution()) {
             std::cout << "│      找到解决方案!          │" << std::endl;
             std::cout << "└─────────────────────────────┘" << std::endl;
@@ -178,7 +178,7 @@ int main(int argc, char* argv[]) {
             std::cout << "在指定深度 " << 选项.searchDepth << " 步内无解" << std::endl;
         }
         
-        return 0;
+    return 0;
     }
     catch (const std::exception& e) {
         std::cerr << "程序出错: " << e.what() << std::endl;

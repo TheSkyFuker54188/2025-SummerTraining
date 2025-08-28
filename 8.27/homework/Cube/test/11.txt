@@ -1,0 +1,27 @@
+back:
+y b y
+y b y
+y b y
+up:
+g y g
+b w b
+g y g
+front:
+w g w
+w g w
+w g w
+down:
+b w b
+g y g
+b w b
+right:
+p p p
+r r r
+p p p
+left:
+r r r
+p p p
+r r r
+
+'4+', '7-', '1-', '4-', '7-'
+'7+', '7+', '1-'

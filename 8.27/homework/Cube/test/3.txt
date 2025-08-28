@@ -1,0 +1,26 @@
+back:
+y y r
+g g w
+y y g
+up:
+r r w
+p w w
+g g w
+front:
+w w b
+w b b
+w b p
+down:
+b y y
+b y y
+p p y
+right:
+p b g
+p p g
+p p g
+left:
+b r b
+r r g
+r r r
+
+'2+', '8-', '5+', '1+', '5-'
