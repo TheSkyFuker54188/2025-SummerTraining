@@ -1,76 +1,82 @@
 /**
- * 魔方求解主程序
- * 读取魔方初始状态，使用BFS算法求解
+ * 魔方求解程序
+ * 从标准输入读取魔方状态，输出解法步骤
  */
 
 #include <windows.h>
+#include <iostream>
+#include <chrono>
+#include <string>
 #include "solver.hpp"
 
 /**
- * 从标准输入读取所有文本
+ * 从标准输入读取文本直到EOF
  */
-std::string ReadAllInput() {
-    std::string content;
-    std::string line;
+std::string 读取输入() {
+    std::string 文本内容;
+    std::string 当前行;
     
-    while (std::getline(std::cin, line)) {
-        content += line + "\n";
+    while (std::getline(std::cin, 当前行)) {
+        文本内容 += 当前行 + "\n";
     }
     
-    return content;
+    return 文本内容;
 }
 
 int main(int argc, char* argv[]) {
-    // 设置控制台输出编码为UTF-8
+    // 设置控制台编码为UTF-8
     SetConsoleOutputCP(65001);
     
-    // 检查命令行参数
+    // 检查参数
     if (argc < 2 || std::stoi(argv[1]) < 1) {
         std::cout << "用法: " << argv[0] << " <搜索深度>" << std::endl;
         std::cout << "参数说明:" << std::endl;
-        std::cout << "  搜索深度: 指定BFS搜索的最大深度" << std::endl;
+        std::cout << "  搜索深度: BFS算法的最大搜索深度" << std::endl;
         std::cout << "输入格式:" << std::endl;
-        std::cout << "  请将魔方的初始状态从标准输入传入" << std::endl;
+        std::cout << "  从标准输入读取魔方状态描述" << std::endl;
         std::cout << "  使用EOF结束输入" << std::endl;
         return 1;
     }
     
-    // 解析最大搜索深度
-    const int maxDepth = std::stoi(argv[1]);
+    // 解析搜索深度参数
+    const int 搜索深度 = std::stoi(argv[1]);
     
-    // 创建任务系统(单线程)
-    TaskSystem<PMagicCubeTask>* taskSystem = new SingleThreadTaskSystem<PMagicCubeTask>();
+    // 创建任务系统
+    TaskSystem<PCubeTask>* 任务系统 = new SingleThreadTaskSystem<PCubeTask>();
     
-    // 创建魔方求解器
-    MagicCubeSolver* solver = new MagicCubeSolver(maxDepth, false, true);
+    // 创建求解器
+    CubeSolver* 求解器 = new CubeSolver(搜索深度, false, true);
     
-    // 从标准输入读取魔方初始状态
-    PMagicCubeTask initialTask = new MagicCubeTask(
-        Cube(ReadAllInput()), 
-        std::vector<CubeAction>()
+    // 读取魔方初始状态
+    Cube 初始状态(读取输入());
+    
+    // 创建初始任务
+    PCubeTask 初始任务 = new CubeTask(
+        std::move(初始状态), 
+        std::vector<MoveAction>()
     );
     
-    // 开始计时并求解
+    // 开始求解，并计时
     std::cout << "开始求解..." << std::endl;
-    auto startTime = std::chrono::system_clock::now();
+    auto 开始时间 = std::chrono::high_resolution_clock::now();
     
-    taskSystem->Execute(initialTask, *solver);
+    任务系统->Execute(初始任务, *求解器);
     
-    auto endTime = std::chrono::system_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime);
-    std::cout << "耗时: " << duration.count() << "毫秒" << std::endl;
+    auto 结束时间 = std::chrono::high_resolution_clock::now();
+    auto 耗时 = std::chrono::duration_cast<std::chrono::milliseconds>(结束时间 - 开始时间).count();
+    std::cout << "计算耗时: " << 耗时 << " 毫秒" << std::endl;
     
     // 输出结果
-    if (solver->HasSolution()) {
-        std::cout << "在 " << maxDepth << " 步内的解决方案:" << std::endl;
-        std::cout << solver->GetSolutionSteps() << std::endl;
+    if (求解器->HasSolution()) {
+        std::cout << "在 " << 搜索深度 << " 步内的解决方案:" << std::endl;
+        std::cout << 求解器->GetSolution() << std::endl;
     } else {
-        std::cout << "在 " << maxDepth << " 步内没有找到解决方案" << std::endl;
+        std::cout << "在 " << 搜索深度 << " 步内未找到解决方案" << std::endl;
     }
     
     // 释放资源
-    delete solver;
-    delete taskSystem;
+    delete 求解器;
+    delete 任务系统;
     
     return 0;
 }

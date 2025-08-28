@@ -2,431 +2,340 @@
 #include <stdexcept>
 #include <string>
 
-constexpr int Rank = 3;          // 3x3x3 魔方
-constexpr int RoundCount = 8;    // 一面周围的8个块
-constexpr int SurfaceCount = 6;  // 魔方的6个面
+// 魔方基本参数定义
+constexpr int CUBE_SIZE = 3;           // 3阶魔方
+constexpr int EDGE_COUNT = 8;          // 一个面边缘位置数量
+constexpr int FACE_COUNT = 6;          // 魔方的面数量
 
-// 魔方的六个面
-enum Surface { 
-    Front,    
-    Back,
-    Left,
-    Right,
-    Up,
-    Down 
+// 魔方面枚举
+enum FaceType { 
+    FACE_FRONT,    
+    FACE_BACK,
+    FACE_LEFT,
+    FACE_RIGHT,
+    FACE_TOP,
+    FACE_BOTTOM 
 };
 
-// 一个面周围8个位置
+// 一个面上的8个位置编号
 //  0    1    2
 //  7   中心   3
 //  6    5    4
-enum RotationPosition { 
-    UpLeft = 0,
-    UpMiddle,
-    UpRight,
-    MiddleRight,
-    DownRight,
-    DownMiddle,
-    DownLeft,
-    MiddleLeft = 7 
+enum PositionIdx { 
+    POS_TOP_LEFT = 0,
+    POS_TOP_MID,
+    POS_TOP_RIGHT,
+    POS_MID_RIGHT,
+    POS_BOT_RIGHT,
+    POS_BOT_MID,
+    POS_BOT_LEFT,
+    POS_MID_LEFT = 7 
 };
 
-// 带旋转偏移的面
-// 由于不同的表示方法有不同的旋转方向，这里定义偏移量
-struct SurfaceWithRotationOffset {
-    Surface surface;
-    int rotation_offset;  // 正值：顺时针
+// 面与旋转偏移量组合结构
+struct FaceWithOffset {
+    FaceType face;
+    int offset;  // 正值表示顺时针偏移
 
-    SurfaceWithRotationOffset(Surface surface, int rotation_offset)
-        : surface(surface), rotation_offset(rotation_offset) {}
+    FaceWithOffset(FaceType f, int off)
+        : face(f), offset(off) {}
 };
 
-// 颜色定义
-enum class Color { 
-    White,
-    Yellow,
-    Red,
-    Pink,
-    Blue,
-    Green 
+// 颜色枚举
+enum class ColorType { 
+    WHITE,
+    YELLOW,
+    RED,
+    PINK,
+    BLUE,
+    GREEN 
 };
 
-// 相对位置关系
-enum class RelativePosition { 
-    Upside,
-    Downside,
-    Leftside,
-    Rightside 
+// 相对位置枚举
+enum class FacePosition { 
+    UPPER,
+    LOWER,
+    LSIDE,
+    RSIDE 
 };
 
 // 旋转方向
-enum class Direction { 
-    Clockwise,
-    CounterClockwise 
+enum class RotateDir { 
+    CLOCKWISE,
+    COUNTER_CLOCKWISE 
 };
 
-// 魔方操作
-struct CubeAction {
-    bool is_middle_layer;
-    Surface surface;
-    Direction direction;
+// 魔方操作结构
+struct MoveAction {
+    bool is_middle;
+    FaceType face;
+    RotateDir dir;
 };
 
 // 标准格式的魔方操作
-struct CubeActionStandard {
-    int standard_surface_index;
-    bool is_positive_direction;
+struct StandardAction {
+    int action_index;
+    bool is_positive;
 };
 
-// 18种标准操作
-constexpr CubeActionStandard StandardActions[] = {
-    {0, true},
-    {1, true},
-    {2, true},
-    {3, true},
-    {4, true},
-    {5, true},
-    {6, true},
-    {7, true},
-    {8, true},
-    {0, false},
-    {1, false},
-    {2, false},
-    {3, false},
-    {4, false},
-    {5, false},
-    {6, false},
-    {7, false},
-    {8, false},
+// 18种标准操作定义
+constexpr StandardAction ALL_ACTIONS[] = {
+    {0, true}, {1, true}, {2, true},
+    {3, true}, {4, true}, {5, true},
+    {6, true}, {7, true}, {8, true},
+    {0, false}, {1, false}, {2, false},
+    {3, false}, {4, false}, {5, false},
+    {6, false}, {7, false}, {8, false},
 };
 
-// 面名称转换为枚举值
-inline Surface ToSurface(const std::string& surface_name) {
-    Surface surface;
-    switch (surface_name[0]) {
-        case 'u':
-            surface = Surface::Up;
-            break;
-        case 'd':
-            surface = Surface::Down;
-            break;
-        case 'f':
-            surface = Surface::Front;
-            break;
-        case 'b':
-            surface = Surface::Back;
-            break;
-        case 'l':
-            surface = Surface::Left;
-            break;
-        case 'r':
-            surface = Surface::Right;
-            break;
+// 面名称转换为枚举
+inline FaceType StringToFace(const std::string& name) {
+    FaceType result;
+    
+    switch (name[0]) {
+        case 'u': result = FaceType::FACE_TOP; break;
+        case 'd': result = FaceType::FACE_BOTTOM; break;
+        case 'f': result = FaceType::FACE_FRONT; break;
+        case 'b': result = FaceType::FACE_BACK; break;
+        case 'l': result = FaceType::FACE_LEFT; break;
+        case 'r': result = FaceType::FACE_RIGHT; break;
         default:
-            throw std::invalid_argument("无效的面名称: " + surface_name);
-    }
-    return surface;
-}
-
-// 面枚举值转换为名称
-inline std::string ToSurfaceName(Surface surface) {
-    std::string surface_name;
-    switch (surface) {
-        case Surface::Up:
-            surface_name = "up";
-            break;
-        case Surface::Down:
-            surface_name = "down";
-            break;
-        case Surface::Front:
-            surface_name = "front";
-            break;
-        case Surface::Back:
-            surface_name = "back";
-            break;
-        case Surface::Left:
-            surface_name = "left";
-            break;
-        case Surface::Right:
-            surface_name = "right";
-            break;
-    }
-    return surface_name;
-}
-
-// 颜色名称转换为枚举值
-inline Color ToColor(const std::string& color_name) {
-    Color color;
-    switch (color_name[0]) {
-        case 'w':
-            color = Color::White;
-            break;
-        case 'y':
-            color = Color::Yellow;
-            break;
-        case 'r':
-            color = Color::Red;
-            break;
-        case 'p':
-            color = Color::Pink;
-            break;
-        case 'b':
-            color = Color::Blue;
-            break;
-        case 'g':
-            color = Color::Green;
-            break;
-        default:
-            throw std::invalid_argument("无效的颜色名称: " + color_name);
-    }
-    return color;
-}
-
-// 颜色枚举值转换为字符
-inline char ToColorName(Color color) {
-    char color_name;
-    switch (color) {
-        case Color::White:
-            color_name = 'w';
-            break;
-        case Color::Yellow:
-            color_name = 'y';
-            break;
-        case Color::Red:
-            color_name = 'r';
-            break;
-        case Color::Pink:
-            color_name = 'p';
-            break;
-        case Color::Blue:
-            color_name = 'b';
-            break;
-        case Color::Green:
-            color_name = 'g';
-            break;
-        default:
-            throw std::runtime_error("无效的颜色枚举值");
-    }
-    return color_name;
-}
-
-// 获取下一个旋转位置
-inline RotationPosition operator++(RotationPosition& rotation_position) {
-    rotation_position = static_cast<RotationPosition>((rotation_position + 1) % RoundCount);
-    return rotation_position;
-}
-
-// 旋转位置加偏移量
-inline RotationPosition operator+(RotationPosition rotation_position, int offset) {
-    if (offset < 0)
-        offset = offset + (1 + (-offset) / RoundCount) * RoundCount;
-    return static_cast<RotationPosition>(((int)rotation_position + offset * 2) % RoundCount);
-}
-
-// 旋转位置减偏移量
-inline RotationPosition operator-(RotationPosition rotation_position, int offset) {
-    return rotation_position + (-offset);
-}
-
-// 获取相对位置的面及其旋转偏移
-inline SurfaceWithRotationOffset operator+(Surface surface, RelativePosition relative_position) {
-    switch (surface) {
-        case Surface::Front:
-            switch (relative_position) {
-                case RelativePosition::Upside:
-                    return SurfaceWithRotationOffset(Surface::Up, 0);
-                case RelativePosition::Downside:
-                    return SurfaceWithRotationOffset(Surface::Down, 0);
-                case RelativePosition::Leftside:
-                    return SurfaceWithRotationOffset(Surface::Left, -1);
-                case RelativePosition::Rightside:
-                    return SurfaceWithRotationOffset(Surface::Right, +1);
-                default:
-                    throw std::runtime_error("无效的相对位置");
-            }
-        case Surface::Back:
-            switch (relative_position) {
-                case RelativePosition::Upside:
-                    return SurfaceWithRotationOffset(Surface::Down, 0);
-                case RelativePosition::Downside:
-                    return SurfaceWithRotationOffset(Surface::Up, 0);
-                case RelativePosition::Leftside:
-                    return SurfaceWithRotationOffset(Surface::Left, +1);
-                case RelativePosition::Rightside:
-                    return SurfaceWithRotationOffset(Surface::Right, -1);
-                default:
-                    throw std::runtime_error("无效的相对位置");
-            }
-        case Surface::Left:
-            switch (relative_position) {
-                case RelativePosition::Upside:
-                    return SurfaceWithRotationOffset(Surface::Back, -1);
-                case RelativePosition::Downside:
-                    return SurfaceWithRotationOffset(Surface::Front, +1);
-                case RelativePosition::Leftside:
-                    return SurfaceWithRotationOffset(Surface::Down, +2);
-                case RelativePosition::Rightside:
-                    return SurfaceWithRotationOffset(Surface::Up, 0);
-                default:
-                    throw std::runtime_error("无效的相对位置");
-            }
-        case Surface::Right:
-            switch (relative_position) {
-                case RelativePosition::Upside:
-                    return SurfaceWithRotationOffset(Surface::Back, +1);
-                case RelativePosition::Downside:
-                    return SurfaceWithRotationOffset(Surface::Front, -1);
-                case RelativePosition::Leftside:
-                    return SurfaceWithRotationOffset(Surface::Up, 0);
-                case RelativePosition::Rightside:
-                    return SurfaceWithRotationOffset(Surface::Down, -2);
-                default:
-                    throw std::runtime_error("无效的相对位置");
-            }
-        case Surface::Up:
-            switch (relative_position) {
-                case RelativePosition::Upside:
-                    return SurfaceWithRotationOffset(Surface::Back, 0);
-                case RelativePosition::Downside:
-                    return SurfaceWithRotationOffset(Surface::Front, 0);
-                case RelativePosition::Leftside:
-                    return SurfaceWithRotationOffset(Surface::Left, 0);
-                case RelativePosition::Rightside:
-                    return SurfaceWithRotationOffset(Surface::Right, 0);
-                default:
-                    throw std::runtime_error("无效的相对位置");
-            }
-        case Surface::Down:
-            switch (relative_position) {
-                case RelativePosition::Upside:
-                    return SurfaceWithRotationOffset(Surface::Front, 0);
-                case RelativePosition::Downside:
-                    return SurfaceWithRotationOffset(Surface::Back, 0);
-                case RelativePosition::Leftside:
-                    return SurfaceWithRotationOffset(Surface::Left, -2);
-                case RelativePosition::Rightside:
-                    return SurfaceWithRotationOffset(Surface::Right, +2);
-                default:
-                    throw std::runtime_error("无效的相对位置");
-            }
-        default:
-            throw std::invalid_argument("无效的面");
-    }
-}
-
-// 将普通操作转换为标准操作
-inline CubeActionStandard ConvertCubeActionFormat(CubeAction action) {
-    CubeActionStandard standard_action;
-    if (action.is_middle_layer) {
-        switch (action.surface) {
-            case Surface::Left:
-                standard_action.standard_surface_index = 1;
-                standard_action.is_positive_direction = action.direction == Direction::Clockwise;
-                break;
-            case Surface::Right:
-                standard_action.standard_surface_index = 1;
-                standard_action.is_positive_direction = action.direction == Direction::CounterClockwise;
-                break;
-            case Surface::Up:
-                standard_action.standard_surface_index = 4;
-                standard_action.is_positive_direction = action.direction == Direction::Clockwise;
-                break;
-            case Surface::Down:
-                standard_action.standard_surface_index = 4;
-                standard_action.is_positive_direction = action.direction == Direction::CounterClockwise;
-                break;
-            case Surface::Front:
-                standard_action.standard_surface_index = 7;
-                standard_action.is_positive_direction = action.direction == Direction::Clockwise;
-                break;
-            case Surface::Back:
-                standard_action.standard_surface_index = 7;
-                standard_action.is_positive_direction = action.direction == Direction::CounterClockwise;
-                break;
-            default:
-                throw std::runtime_error("无效的面");
-        }
-    } else {
-        switch (action.surface) {
-            case Surface::Left:
-                standard_action.standard_surface_index = 0;
-                standard_action.is_positive_direction = action.direction == Direction::Clockwise;
-                break;
-            case Surface::Right:
-                standard_action.standard_surface_index = 2;
-                standard_action.is_positive_direction = action.direction == Direction::CounterClockwise;
-                break;
-            case Surface::Up:
-                standard_action.standard_surface_index = 5;
-                standard_action.is_positive_direction = action.direction == Direction::Clockwise;
-                break;
-            case Surface::Down:
-                standard_action.standard_surface_index = 3;
-                standard_action.is_positive_direction = action.direction == Direction::CounterClockwise;
-                break;
-            case Surface::Front:
-                standard_action.standard_surface_index = 6;
-                standard_action.is_positive_direction = action.direction == Direction::Clockwise;
-                break;
-            case Surface::Back:
-                standard_action.standard_surface_index = 8;
-                standard_action.is_positive_direction = action.direction == Direction::CounterClockwise;
-                break;
-            default:
-                throw std::runtime_error("无效的面");
-        }
-    }
-    return standard_action;
-}
-
-// 将标准操作转换为普通操作
-inline CubeAction ConvertCubeActionFormat(CubeActionStandard standard_action) {
-    CubeAction action;
-    if (standard_action.standard_surface_index == 1 || 
-        standard_action.standard_surface_index == 4 || 
-        standard_action.standard_surface_index == 7) {
-        action.is_middle_layer = true;
-    } else {
-        action.is_middle_layer = false;
+            throw std::invalid_argument("未知面名称: " + name);
     }
     
-    switch (standard_action.standard_surface_index) {
+    return result;
+}
+
+// 面枚举转换为名称字符串
+inline std::string FaceToString(FaceType face) {
+    switch (face) {
+        case FaceType::FACE_TOP: return "up";
+        case FaceType::FACE_BOTTOM: return "down";
+        case FaceType::FACE_FRONT: return "front";
+        case FaceType::FACE_BACK: return "back";
+        case FaceType::FACE_LEFT: return "left";
+        case FaceType::FACE_RIGHT: return "right";
+        default: return "unknown";
+    }
+}
+
+// 颜色名称转换为枚举
+inline ColorType CharToColor(const std::string& code) {
+    ColorType result;
+    
+    switch (code[0]) {
+        case 'w': result = ColorType::WHITE; break;
+        case 'y': result = ColorType::YELLOW; break;
+        case 'r': result = ColorType::RED; break;
+        case 'p': result = ColorType::PINK; break;
+        case 'b': result = ColorType::BLUE; break;
+        case 'g': result = ColorType::GREEN; break;
+        default:
+            throw std::invalid_argument("未知颜色码: " + code);
+    }
+    
+    return result;
+}
+
+// 颜色枚举转换为字符
+inline char ColorToChar(ColorType color) {
+    switch (color) {
+        case ColorType::WHITE: return 'w';
+        case ColorType::YELLOW: return 'y';
+        case ColorType::RED: return 'r';
+        case ColorType::PINK: return 'p';
+        case ColorType::BLUE: return 'b';
+        case ColorType::GREEN: return 'g';
+    }
+}
+
+// 位置索引增加
+inline PositionIdx NextPosition(PositionIdx& pos) {
+    pos = static_cast<PositionIdx>((pos + 1) % EDGE_COUNT);
+    return pos;
+}
+
+// 位置索引加上偏移
+inline PositionIdx OffsetPosition(PositionIdx pos, int offset) {
+    if (offset < 0) {
+        // 处理负偏移，确保结果为正
+        offset = offset + (1 + (-offset) / EDGE_COUNT) * EDGE_COUNT;
+    }
+    return static_cast<PositionIdx>(((int)pos + offset * 2) % EDGE_COUNT);
+}
+
+// 位置索引减去偏移
+inline PositionIdx BackPosition(PositionIdx pos, int offset) {
+    return OffsetPosition(pos, -offset);
+}
+
+// 获取给定面的相对面及其旋转偏移
+inline FaceWithOffset GetRelativeFace(FaceType face, FacePosition pos) {
+    switch (face) {
+        case FaceType::FACE_FRONT:
+            switch (pos) {
+                case FacePosition::UPPER: return FaceWithOffset(FaceType::FACE_TOP, 0);
+                case FacePosition::LOWER: return FaceWithOffset(FaceType::FACE_BOTTOM, 0);
+                case FacePosition::LSIDE: return FaceWithOffset(FaceType::FACE_LEFT, -1);
+                case FacePosition::RSIDE: return FaceWithOffset(FaceType::FACE_RIGHT, +1);
+            }
+        case FaceType::FACE_BACK:
+            switch (pos) {
+                case FacePosition::UPPER: return FaceWithOffset(FaceType::FACE_BOTTOM, 0);
+                case FacePosition::LOWER: return FaceWithOffset(FaceType::FACE_TOP, 0);
+                case FacePosition::LSIDE: return FaceWithOffset(FaceType::FACE_LEFT, +1);
+                case FacePosition::RSIDE: return FaceWithOffset(FaceType::FACE_RIGHT, -1);
+            }
+        case FaceType::FACE_LEFT:
+            switch (pos) {
+                case FacePosition::UPPER: return FaceWithOffset(FaceType::FACE_BACK, -1);
+                case FacePosition::LOWER: return FaceWithOffset(FaceType::FACE_FRONT, +1);
+                case FacePosition::LSIDE: return FaceWithOffset(FaceType::FACE_BOTTOM, +2);
+                case FacePosition::RSIDE: return FaceWithOffset(FaceType::FACE_TOP, 0);
+            }
+        case FaceType::FACE_RIGHT:
+            switch (pos) {
+                case FacePosition::UPPER: return FaceWithOffset(FaceType::FACE_BACK, +1);
+                case FacePosition::LOWER: return FaceWithOffset(FaceType::FACE_FRONT, -1);
+                case FacePosition::LSIDE: return FaceWithOffset(FaceType::FACE_TOP, 0);
+                case FacePosition::RSIDE: return FaceWithOffset(FaceType::FACE_BOTTOM, -2);
+            }
+        case FaceType::FACE_TOP:
+            switch (pos) {
+                case FacePosition::UPPER: return FaceWithOffset(FaceType::FACE_BACK, 0);
+                case FacePosition::LOWER: return FaceWithOffset(FaceType::FACE_FRONT, 0);
+                case FacePosition::LSIDE: return FaceWithOffset(FaceType::FACE_LEFT, 0);
+                case FacePosition::RSIDE: return FaceWithOffset(FaceType::FACE_RIGHT, 0);
+            }
+        case FaceType::FACE_BOTTOM:
+            switch (pos) {
+                case FacePosition::UPPER: return FaceWithOffset(FaceType::FACE_FRONT, 0);
+                case FacePosition::LOWER: return FaceWithOffset(FaceType::FACE_BACK, 0);
+                case FacePosition::LSIDE: return FaceWithOffset(FaceType::FACE_LEFT, -2);
+                case FacePosition::RSIDE: return FaceWithOffset(FaceType::FACE_RIGHT, +2);
+            }
+        default:
+            throw std::invalid_argument("错误的面索引");
+    }
+}
+
+// 常规操作转换为标准操作格式
+inline StandardAction ConvertToStandard(MoveAction move) {
+    StandardAction std_action;
+    
+    if (move.is_middle) {
+        switch (move.face) {
+            case FaceType::FACE_LEFT:
+                std_action.action_index = 1;
+                std_action.is_positive = move.dir == RotateDir::CLOCKWISE;
+                break;
+            case FaceType::FACE_RIGHT:
+                std_action.action_index = 1;
+                std_action.is_positive = move.dir == RotateDir::COUNTER_CLOCKWISE;
+                break;
+            case FaceType::FACE_TOP:
+                std_action.action_index = 4;
+                std_action.is_positive = move.dir == RotateDir::CLOCKWISE;
+                break;
+            case FaceType::FACE_BOTTOM:
+                std_action.action_index = 4;
+                std_action.is_positive = move.dir == RotateDir::COUNTER_CLOCKWISE;
+                break;
+            case FaceType::FACE_FRONT:
+                std_action.action_index = 7;
+                std_action.is_positive = move.dir == RotateDir::CLOCKWISE;
+                break;
+            case FaceType::FACE_BACK:
+                std_action.action_index = 7;
+                std_action.is_positive = move.dir == RotateDir::COUNTER_CLOCKWISE;
+                break;
+            default:
+                throw std::runtime_error("无效的面");
+        }
+    } else {
+        switch (move.face) {
+            case FaceType::FACE_LEFT:
+                std_action.action_index = 0;
+                std_action.is_positive = move.dir == RotateDir::CLOCKWISE;
+                break;
+            case FaceType::FACE_RIGHT:
+                std_action.action_index = 2;
+                std_action.is_positive = move.dir == RotateDir::COUNTER_CLOCKWISE;
+                break;
+            case FaceType::FACE_TOP:
+                std_action.action_index = 5;
+                std_action.is_positive = move.dir == RotateDir::CLOCKWISE;
+                break;
+            case FaceType::FACE_BOTTOM:
+                std_action.action_index = 3;
+                std_action.is_positive = move.dir == RotateDir::COUNTER_CLOCKWISE;
+                break;
+            case FaceType::FACE_FRONT:
+                std_action.action_index = 6;
+                std_action.is_positive = move.dir == RotateDir::CLOCKWISE;
+                break;
+            case FaceType::FACE_BACK:
+                std_action.action_index = 8;
+                std_action.is_positive = move.dir == RotateDir::COUNTER_CLOCKWISE;
+                break;
+            default:
+                throw std::runtime_error("无效的面");
+        }
+    }
+    
+    return std_action;
+}
+
+// 标准操作格式转换为常规操作
+inline MoveAction ConvertToMove(StandardAction std_action) {
+    MoveAction move;
+    
+    // 确定是否为中层旋转
+    move.is_middle = (std_action.action_index == 1 || 
+                      std_action.action_index == 4 || 
+                      std_action.action_index == 7);
+    
+    // 根据索引确定面和方向
+    switch (std_action.action_index) {
         case 0:
-            action.surface = Surface::Left;
-            action.direction = standard_action.is_positive_direction ? Direction::Clockwise : Direction::CounterClockwise;
+            move.face = FaceType::FACE_LEFT;
+            move.dir = std_action.is_positive ? RotateDir::CLOCKWISE : RotateDir::COUNTER_CLOCKWISE;
             break;
         case 1:
-            action.surface = Surface::Left;
-            action.direction = standard_action.is_positive_direction ? Direction::Clockwise : Direction::CounterClockwise;
+            move.face = FaceType::FACE_LEFT;
+            move.dir = std_action.is_positive ? RotateDir::CLOCKWISE : RotateDir::COUNTER_CLOCKWISE;
             break;
         case 2:
-            action.surface = Surface::Right;
-            action.direction = standard_action.is_positive_direction ? Direction::CounterClockwise : Direction::Clockwise;
+            move.face = FaceType::FACE_RIGHT;
+            move.dir = std_action.is_positive ? RotateDir::COUNTER_CLOCKWISE : RotateDir::CLOCKWISE;
             break;
         case 3:
-            action.surface = Surface::Down;
-            action.direction = standard_action.is_positive_direction ? Direction::CounterClockwise : Direction::Clockwise;
+            move.face = FaceType::FACE_BOTTOM;
+            move.dir = std_action.is_positive ? RotateDir::COUNTER_CLOCKWISE : RotateDir::CLOCKWISE;
             break;
         case 4:
-            action.surface = Surface::Up;
-            action.direction = standard_action.is_positive_direction ? Direction::Clockwise : Direction::CounterClockwise;
+            move.face = FaceType::FACE_TOP;
+            move.dir = std_action.is_positive ? RotateDir::CLOCKWISE : RotateDir::COUNTER_CLOCKWISE;
             break;
         case 5:
-            action.surface = Surface::Up;
-            action.direction = standard_action.is_positive_direction ? Direction::Clockwise : Direction::CounterClockwise;
+            move.face = FaceType::FACE_TOP;
+            move.dir = std_action.is_positive ? RotateDir::CLOCKWISE : RotateDir::COUNTER_CLOCKWISE;
             break;
         case 6:
-            action.surface = Surface::Front;
-            action.direction = standard_action.is_positive_direction ? Direction::Clockwise : Direction::CounterClockwise;
+            move.face = FaceType::FACE_FRONT;
+            move.dir = std_action.is_positive ? RotateDir::CLOCKWISE : RotateDir::COUNTER_CLOCKWISE;
             break;
         case 7:
-            action.surface = Surface::Front;
-            action.direction = standard_action.is_positive_direction ? Direction::Clockwise : Direction::CounterClockwise;
+            move.face = FaceType::FACE_FRONT;
+            move.dir = std_action.is_positive ? RotateDir::CLOCKWISE : RotateDir::COUNTER_CLOCKWISE;
             break;
         case 8:
-            action.surface = Surface::Back;
-            action.direction = standard_action.is_positive_direction ? Direction::CounterClockwise : Direction::Clockwise;
+            move.face = FaceType::FACE_BACK;
+            move.dir = std_action.is_positive ? RotateDir::COUNTER_CLOCKWISE : RotateDir::CLOCKWISE;
             break;
+        default:
+            throw std::runtime_error("无效的操作索引");
     }
-    return action;
+    
+    return move;
 } 
