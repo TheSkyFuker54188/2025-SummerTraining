@@ -1,76 +1,208 @@
-#pragma once
+#ifndef TASK_HANDLER_H_INCLUDED
+#define TASK_HANDLER_H_INCLUDED
+
+/*==============================================
+ * 任务处理系统
+ * 实现通用任务队列与处理框架
+ *==============================================*/
+
+// 系统头文件
 #include <chrono>
 #include <memory>
 #include <queue>
+#include <functional>
+#include <stdexcept>
+
+namespace cube {
+
+// 前置声明
+template <typename T>
+class TaskEnqueuer;
+
+template <typename T>
+class TaskProcessor;
+
+template <typename T>
+class TaskSystem;
+
+// 任务处理相关异常
+class TaskException : public std::runtime_error {
+public:
+    explicit TaskException(const std::string& message) : std::runtime_error(message) {}
+};
+
+class TaskQueueEmptyException : public TaskException {
+public:
+    TaskQueueEmptyException() : TaskException("任务队列为空") {}
+};
+
+class TaskProcessingException : public TaskException {
+public:
+    explicit TaskProcessingException(const std::string& message) 
+        : TaskException("任务处理错误: " + message) {}
+};
 
 /**
- * 任务队列接口
- * 负责将任务加入队列
+ * 任务入队接口
+ * 负责将任务加入处理队列
  */
-template <typename TTask>
+template <typename T>
 class TaskEnqueuer {
-   public:
-    virtual ~TaskEnqueuer() {}
-    virtual void AddTask(TTask task) = 0;
+public:
+    /**
+     * 虚析构函数
+     */
+    virtual ~TaskEnqueuer() = default;
+    
+    /**
+     * 将任务添加到队列
+     * @param task 要添加的任务
+     */
+    virtual void AddTask(T task) = 0;
+    
+    /**
+     * 获取队列中当前任务数量
+     * @return 队列中的任务数
+     */
+    virtual size_t GetQueueSize() const = 0;
 };
 
 /**
- * 任务处理接口
- * 负责处理具体任务
+ * 任务处理器接口
+ * 负责处理具体任务逻辑
  */
-template <typename TTask>
+template <typename T>
 class TaskProcessor {
-   public:
-    virtual ~TaskProcessor() {}
-    virtual void ProcessTask(TTask& task, TaskEnqueuer<TTask>& enqueuer) = 0;
+public:
+    /**
+     * 虚析构函数
+     */
+    virtual ~TaskProcessor() = default;
+    
+    /**
+     * 处理单个任务
+     * @param task 待处理的任务
+     * @param enqueuer 任务队列操作接口
+     */
+    virtual void ProcessTask(T& task, TaskEnqueuer<T>& enqueuer) = 0;
 };
 
 /**
- * 任务管理系统接口
+ * 任务系统接口
  * 管理任务的执行流程
  */
-template <typename TTask>
+template <typename T>
 class TaskSystem {
-   public:
-    virtual ~TaskSystem() {}
-    virtual void Execute(TTask& initialTask, TaskProcessor<TTask>& processor) = 0;
+public:
+    /**
+     * 虚析构函数
+     */
+    virtual ~TaskSystem() = default;
+    
+    /**
+     * 启动任务系统并执行
+     * @param initialTask 初始任务
+     * @param processor 任务处理器
+     */
+    virtual void Execute(T& initialTask, TaskProcessor<T>& processor) = 0;
 };
 
 /**
  * 单线程任务系统实现
- * 采用简单队列实现任务管理
+ * 通过队列实现任务调度
  */
-template <typename TTask>
-class SingleThreadTaskSystem : public TaskSystem<TTask> {
-   private:
-    // 内部任务队列管理类
-    class QueueEnqueuer : public TaskEnqueuer<TTask> {
-       private:
-        std::queue<TTask>& taskQueue;
+template <typename T>
+class SingleThreadTaskSystem : public TaskSystem<T> {
+private:
+    /**
+     * 内部队列包装类
+     */
+    class QueueWrapper : public TaskEnqueuer<T> {
+    private:
+        std::queue<T>& taskQueue;  // 引用任务队列
+        size_t maxSize;            // 记录队列历史最大长度
 
-       public:
-        QueueEnqueuer(std::queue<TTask>& queue) : taskQueue(queue) {}
-        void AddTask(TTask task) override { taskQueue.push(task); }
+    public:
+        /**
+         * 构造函数
+         * @param queue 任务队列引用
+         */
+        explicit QueueWrapper(std::queue<T>& queue) 
+            : taskQueue(queue), maxSize(0) {}
+
+        /**
+         * 添加任务到队列
+         * @param task 要添加的任务
+         */
+        void AddTask(T task) override { 
+            taskQueue.push(task); 
+            
+            // 更新最大队列长度
+            if (taskQueue.size() > maxSize) {
+                maxSize = taskQueue.size();
+            }
+        }
+        
+        /**
+         * 获取当前队列大小
+         */
+        size_t GetQueueSize() const override {
+            return taskQueue.size();
+        }
+        
+        /**
+         * 获取历史最大队列大小
+         */
+        size_t GetMaxQueueSize() const {
+            return maxSize;
+        }
     };
 
-   public:
+public:
     /**
-     * 执行初始任务并处理所有后续任务
+     * 构造函数
+     */
+    SingleThreadTaskSystem() = default;
+    
+    /**
+     * 析构函数
+     */
+    ~SingleThreadTaskSystem() override = default;
+    
+    /**
+     * 执行任务处理流程
      * @param initialTask 初始任务
      * @param processor 任务处理器
+     * @throws TaskException 如果处理过程中出现错误
      */
-    void Execute(TTask& initialTask, TaskProcessor<TTask>& processor) override {
-        std::queue<TTask> taskQueue;
-        QueueEnqueuer enqueuer(taskQueue);
-        
-        // 将初始任务加入队列
-        enqueuer.AddTask(initialTask);
-        
-        // 处理队列中所有任务直到队列为空
-        while (!taskQueue.empty()) {
-            TTask currentTask = taskQueue.front();
-            taskQueue.pop();
-            processor.ProcessTask(currentTask, enqueuer);
+    void Execute(T& initialTask, TaskProcessor<T>& processor) override {
+        try {
+            // 创建任务队列
+            std::queue<T> taskQueue;
+            
+            // 创建队列包装器
+            QueueWrapper enqueuer(taskQueue);
+            
+            // 添加初始任务
+            enqueuer.AddTask(initialTask);
+            
+            // 处理队列中的所有任务
+            while (!taskQueue.empty()) {
+                // 获取队首任务
+                T currentTask = taskQueue.front();
+                taskQueue.pop();
+                
+                // 处理当前任务
+                processor.ProcessTask(currentTask, enqueuer);
+            }
+        }
+        catch (const std::exception& e) {
+            // 转换为任务处理异常并重新抛出
+            throw TaskProcessingException(e.what());
         }
     }
-}; 
+};
+
+} // namespace cube
+
+#endif // TASK_HANDLER_H_INCLUDED 
