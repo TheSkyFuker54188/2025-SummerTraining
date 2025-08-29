@@ -130,7 +130,7 @@ void read_game_state(GameState &s) {
 
   // 如果上一个 tick 往 Memory 里写入了内容，在这里读取，注意处理第一个 tick
   // 的情况 if (s.remaining_ticks < MAX_TICKS) {
-  //     // 处理 Memory 读取
+  //     todo: 处理 Memory 读取
   // }
 }
 
@@ -145,7 +145,7 @@ int main() {
   int decision = dist(rng);
   cout << decision << endl;
   // C++ 23 也可使用 std::print
-  // 如果需要写入 Memory，在此处写入
+  // todo: 如果需要写入 Memory，在此处写入
 
   return 0;
 }
