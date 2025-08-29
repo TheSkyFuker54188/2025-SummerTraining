@@ -67,7 +67,6 @@ for %%f in ("%TEST_DIR%\*.txt") do (
     type "!temp_file!"
     
     :: 提取求解步骤到结果文件
-    echo Extracting solution steps...
     > "!result_file!" (
         for /f "usebackq delims=" %%i in ("!temp_file!") do (
             set "line=%%i"
@@ -105,10 +104,6 @@ for %%f in ("%TEST_DIR%\*.txt") do (
         set /a failed_tests+=1
         echo [Failed] %%~nxf ^(Exit code: !exit_code!^) - Error recorded to: %%~nf.result.txt
     )
-    
-    :: 显示提取的结果
-    echo Extracted result:
-    type "!result_file!"
     echo.
 )
 
