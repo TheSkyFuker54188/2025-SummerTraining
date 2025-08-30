@@ -126,12 +126,23 @@ public:
     
     // 标记地图边界为极度危险（增加边界缓冲区）
     int buffer = 2;  // 墙体缓冲区大小
+    int boundary_buffer = 2;  // 安全区内侧缓冲区大小
+    
     for (int y = 0; y < MAXM; y++) {
       for (int x = 0; x < MAXN; x++) {
-        // 安全区外为极度危险
+        // 标记绝对禁区 - 安全区外
         if (x < state.current_safe_zone.x_min || x > state.current_safe_zone.x_max ||
             y < state.current_safe_zone.y_min || y > state.current_safe_zone.y_max) {
-          danger_map[y][x] = 255;  // 最高危险度
+          danger_map[y][x] = 255;  // 极度危险
+        }
+        
+        // 标记安全区内的边界缓冲区
+        else if (x < state.current_safe_zone.x_min + boundary_buffer || 
+                 x > state.current_safe_zone.x_max - boundary_buffer ||
+                 y < state.current_safe_zone.y_min + boundary_buffer ||
+                 y > state.current_safe_zone.y_max - boundary_buffer) {
+          // 边界内侧缓冲区域也设为高危险度
+          danger_map[y][x] = 200;
         }
         
         // 墙体附近区域也标记为高危
@@ -174,6 +185,14 @@ public:
         danger_map[item.pos.y][item.pos.x] = 80;
       }
     }
+    
+    // 检查并标记安全区即将收缩的区域
+    if (state.next_shrink_tick > 0) {
+      int current_tick = MAX_TICKS - state.remaining_ticks;
+      if (state.next_shrink_tick - current_tick <= 20) {  // 如果20个tick内将收缩
+        mark_shrinking_areas(state);
+      }
+    }
   }
 
   bool is_safe(const Point& p) const {
@@ -192,6 +211,39 @@ public:
 
 private:
   int danger_map[MAXM][MAXN];  // 地图危险度
+  
+  //? 缩圈处理函数
+  void mark_shrinking_areas(const GameState& state) {
+    int current_tick = MAX_TICKS - state.remaining_ticks;
+    int ticks_until_shrink = state.next_shrink_tick - current_tick;
+    
+    // 根据收缩紧迫程度设置更高危险度
+    int danger_level = 0;
+    
+    // 大幅提高危险度级别
+    if (ticks_until_shrink <= 5) {
+      danger_level = 250;  // 即将收缩，极度危险
+    } else if (ticks_until_shrink <= 10) {
+      danger_level = 200;  // 很快收缩，高度危险
+    } else if (ticks_until_shrink <= 20) {
+      danger_level = 150;  // 中等危险
+    } else {
+      danger_level = 100;  // 需要关注
+    }
+    
+    // 标记即将被收缩的区域
+    for (int y = 0; y < MAXM; y++) {
+      for (int x = 0; x < MAXN; x++) {
+        if ((x >= state.current_safe_zone.x_min && x <= state.current_safe_zone.x_max &&
+             y >= state.current_safe_zone.y_min && y <= state.current_safe_zone.y_max) &&
+            (x < state.next_safe_zone.x_min || x > state.next_safe_zone.x_max ||
+             y < state.next_safe_zone.y_min || y > state.next_safe_zone.y_max)) {
+          // 这个区域将被收缩
+          danger_map[y][x] = danger_level;  // 直接设置为高危险度，而不是累加
+        }
+      }
+    }
+  }
 };
 
 // 主决策类
