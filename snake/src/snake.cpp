@@ -125,8 +125,8 @@ public:
     memset(danger_map, 0, sizeof(danger_map));
     
     // 标记地图边界为极度危险（增加边界缓冲区）
-    int buffer = 2;  // 墙体缓冲区大小
-    int boundary_buffer = 2;  // 安全区内侧缓冲区大小
+    int buffer = 1;  // 墙体缓冲区大小
+    int boundary_buffer = 1;  // 安全区内侧缓冲区大小
     
     for (int y = 0; y < MAXM; y++) {
       for (int x = 0; x < MAXN; x++) {
@@ -288,32 +288,49 @@ public:
   }
 
 private:
-  Target select_target(const GameState& state) {
+    Target select_target(const GameState& state) {
     vector<Target> potential_targets;
     const auto& self = state.get_self();
     const auto& head = self.get_head();
     
-    // 添加食物作为潜在目标
+    // 即时反应机制：检测头部极近的食物并立即响应
+    const int immediate_response_distance = 3; // 头部极近的定义（3格内）
+    for (const auto& item : state.items) {
+      if ((item.value > 0 || item.value == -1) && map_analyzer.is_safe(item.pos)) {
+        int dist = manhattan_distance(head, item.pos);
+        if (dist <= immediate_response_distance) {
+          // 发现头部附近的食物，直接返回为最高优先级目标
+          Target immediate_target;
+          immediate_target.pos = item.pos;
+          immediate_target.value = item.value > 0 ? item.value : 3;
+          immediate_target.distance = dist;
+          immediate_target.priority = 1000.0; // 极高优先级
+          return immediate_target; // 立即返回，不再考虑其他目标
+        }
+      }
+    }
+    
+    // 添加食物作为潜在目标（头部极近食物处理后的常规逻辑）
     for (const auto& item : state.items) {
       // 普通食物和增长豆
       if ((item.value > 0 || item.value == -1) && map_analyzer.is_safe(item.pos)) {
-                 Target t;
-         t.pos = item.pos;
-         t.value = item.value > 0 ? item.value : 3;  // 增长豆价值设为3
-         t.distance = manhattan_distance(head, item.pos);
-         
-         // 计算优先级：优化近距离食物的权重
-         double safety_factor = map_analyzer.is_safe(item.pos) ? 1.0 : 0.2;
-         
-         // 非线性提升近距离食物的优先级
-         double distance_factor;
-         if (t.distance <= 5) {
-           distance_factor = 10.0 / (t.distance + 1);  // +1避免除以零
-         } else {
-           distance_factor = 5.0 / t.distance;
-         }
-         
-         t.priority = t.value * distance_factor * safety_factor;
+        Target t;
+        t.pos = item.pos;
+        t.value = item.value > 0 ? item.value : 3;  // 增长豆价值设为3
+        t.distance = manhattan_distance(head, item.pos);
+        
+        // 计算优先级：优化近距离食物的权重
+        double safety_factor = map_analyzer.is_safe(item.pos) ? 1.0 : 0.2;
+        
+        // 非线性提升近距离食物的优先级
+        double distance_factor;
+        if (t.distance <= 5) {
+          distance_factor = 10.0 / (t.distance + 1);  // +1避免除以零
+        } else {
+          distance_factor = 5.0 / t.distance;
+        }
+        
+        t.priority = t.value * distance_factor * safety_factor;
         
         potential_targets.push_back(t);
       }
