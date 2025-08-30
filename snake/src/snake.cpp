@@ -124,12 +124,20 @@ public:
     // 初始化危险度矩阵
     memset(danger_map, 0, sizeof(danger_map));
     
-    // 标记安全区外为极度危险
+    // 标记地图边界为极度危险（增加边界缓冲区）
+    int buffer = 2;  // 墙体缓冲区大小
     for (int y = 0; y < MAXM; y++) {
       for (int x = 0; x < MAXN; x++) {
+        // 安全区外为极度危险
         if (x < state.current_safe_zone.x_min || x > state.current_safe_zone.x_max ||
             y < state.current_safe_zone.y_min || y > state.current_safe_zone.y_max) {
           danger_map[y][x] = 255;  // 最高危险度
+        }
+        
+        // 墙体附近区域也标记为高危
+        if (x <= buffer || x >= MAXN - buffer - 1 || 
+            y <= buffer || y >= MAXM - buffer - 1) {
+          danger_map[y][x] = 200;  // 非常高的危险度
         }
       }
     }
