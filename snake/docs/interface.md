@@ -1,205 +1,362 @@
-### 一、通信协议
+# 一、通信协议
 
-算法程序在每个游戏刻运行一次，通过标准输入（stdin）读取每 tick 的游戏状态，并通过标准输出（stdout）提交决策。
+算法程序在每个游戏刻运行一次，通过标准输入（stdin）读取每 tick
+的游戏状态，并通过标准输出（stdout）提交决策。
 
-### 二、输入格式
+# 二、输入格式
 
-在每个游戏刻开始时，游戏状态信息会以纯文本形式发送到算法程序的标准输入。所有坐标信息均遵循 y x 的顺序。
+在每个游戏刻开始时，游戏状态信息会以纯文本形式发送到算法程序的标准输入。所有坐标信息均遵循
+`y x` 的顺序。
 
-输入字段按顺序为：
+​    剩余游戏刻
+​    物品总数
+​    y1 x1 v1 t1
+   ···
+​    蛇总数
+​    id1 len1 score1 dir1 shield_cd1 shield_time1
+​    y1_1 x1_1
+​    ...
+​    id2 len2 score2 dir2 shield_cd2 shield_time2
+​    ...
+​    宝箱总数
+​    y_chest1 x_chest1 score1
+​    ...
+​    钥匙总数
+​    y_key1 x_key1 holder_id1 remaining_time1
+​    ...
+​    当前安全区_xmin 当前安全区_ymin 当前安全区_xmax 当前安全区_ymax
+​    下次收缩时刻 下次安全区_xmin 下次安全区_ymin 下次安全区_xmax 下次安全区_ymax
+​    最终收缩时刻 最终安全区_xmin 最终安全区_ymin 最终安全区_xmax 最终安全区_ymax
 
-```
+​    [可选] 上一回合存储在Memory系统中的数据
 
-剩余游戏刻
-物品总数
-y1 x1 v1 t1
-...
-蛇总数
-id1 len1 score1 dir1 shield_cd1 shield_time1
-y1_1 x1_1
-...
-id2 len2 score2 dir2 shield_cd2 shield_time2
-...
-宝箱总数
-y_chest1 x_chest1 score1
-...
-钥匙总数
-y_key1 x_key1 holder_id1 remaining_time1
-...
-当前安全区_xmin 当前安全区_ymin 当前安全区_xmax 当前安全区_ymax
-下次收缩时刻 下次安全区_xmin 下次安全区__ymin 下次安全区_xmax 下次安全区_ymax
-最终收缩时刻 最终安全区_xmin 最终安全区_ymin 最终安全区_xmax 最终安全区_ymax
+## 1. 物品信息
 
-[可选] 上一回合存储在 Memory 系统中的数据
+首先是场上物品总数，随后每一行代表一个物品，格式为 `y x v t`。
 
-```
+-   物品值 `v` 的含义：
+    -   `1` 至 `5`：普通食物，提供对应分数。
+    -   `-1`：增长豆。
+    -   `-2`：陷阱。
+    -   `-3`：钥匙（在地上，可拾取）。
+    -   `-5`：宝箱（未持有钥匙时视为障碍物）。
 
-#### 1. 物品信息
+最后一个数字 t 表示物品剩余的存活时间（tick）。如果物品永远不会消失，t
+为 -1。
 
-首先是场上物品总数，随后每一行代表一个物品，格式为 y x v t。
-
-物品值 v 的含义：
-
-- 1 至 5：普通食物，提供对应分数。
-- -1：增长豆。
-- -2：陷阱。
-- -3：钥匙（在地上，可拾取）。
-- -5：宝箱（未持有钥匙时视为障碍物）。
-
-最后一个数字 t 表示物品剩余的存活时间（tick）。如果物品永远不会消失，t 为 -1。
-
-#### 2. 玩家信息
+## 2. 玩家信息
 
 在物品信息之后，是存活的蛇总数，随后是每一条蛇的具体信息。
 
-每条蛇的第一行是综合属性：
+-   第一行是蛇的综合属性：
+    -   `id`：玩家ID（即学号）。
+    -   `len`：蛇的当前长度。
+    -   `score`：当前分数。
+    -   `dir`：当前移动方向 (`0`-左, `1`-上, `2`-右, `3`-下)。
+    -   `shield_cd`：护盾冷却时间 (0表示可用)。
+    -   `shield_time`：护盾剩余有效时间。
+-   后续 `len` 行是蛇每一节身体的坐标，从蛇头到蛇尾。
 
-- id：玩家 ID（即学号）。
-- len：蛇的当前长度。
-- score：当前分数。
-- dir：当前移动方向（0-左，1-上，2-右，3-下）。
-- shield_cd：护盾冷却时间（0 表示可用）。
-- shield_time：护盾剩余有效时间。
+## 3. 宝箱与钥匙附加信息
 
-后续 len 行为蛇每一节身体的坐标，从蛇头到蛇尾。
+-   首先是一个数字，代表未开启的宝箱数量（目前只可能是0或1）
+-   然后是宝箱信息：格式为
+    `y x score`，表示宝箱的坐标和开启后可获得的分数。
+-   然后是一个数字，代表场上所有钥匙的总数（包括地上的和蛇持有的）
+-   最后是每个钥匙的信息：格式为 `y x holder_id remaining_time`。
+    -   `holder_id`：如果为`-1`，表示钥匙在地上；否则为持有该钥匙的玩家ID。
+    -   `remaining_time`：若钥匙被持有，此为自动掉落的剩余时间；若在地上，此值为0。
 
-#### 3. 宝箱与钥匙附加信息
+## 4. 安全区信息
 
-- 首先是一个数字，代表未开启的宝箱数量（目前只可能是 0 或 1）。
-- 随后如果存在宝箱，则每行格式为：y x score，表示宝箱的坐标和开启后可获得的分数。
-- 接下来是一个数字，代表场上所有钥匙的总数（包括地上的和蛇持有的）。
-- 每把钥匙的格式为：y x holder_id remaining_time。
-  - holder_id：如果为 -1，表示钥匙在地上；否则为持有该钥匙的玩家 ID。
-  - remaining_time：若钥匙被持有，此为自动掉落的剩余时间；若在地上，此值为 0。
+输入信息的最后是三行关于安全区的数据
 
-#### 4. 安全区信息
+-   **第一行：** `xmin ymin xmax ymax`，描述当前安全区的边界。
+-   **第二行：** `next_tick next_xmin next_ymin next_xmax next_ymax`\
+    其中 `next_tick`
+    表示"下一次边界实际发生变化"的刻，并给出该刻对应的目标边界；若未来没有变化，`next_tick = -1`。
+-   **第三行：**
+    `final_tick final_xmin final_ymin final_xmax final_ymax`\
+    表示"当前/下一次收缩阶段的完成刻"和到达时的最终边界；若安全区不再收缩，`final_tick = -1`。
 
-输入信息的最后是三行关于安全区的数据：
+## 5. 输入示例
 
-1. 当前边界：xmin ymin xmax ymax，描述当前安全区的边界。
-2. 下次收缩：next_tick next_xmin next_ymin next_xmax next_ymax。
-   - next_tick 表示“下一次边界实际发生变化”的刻（即下一次从当前边界向内收缩的首个刻）。若未来没有变化，next_tick 为 -1，边界重复当前值。
-3. 最终收缩：final_tick final_xmin final_ymin final_xmax final_ymax。
-   - 表示“当前/下一次收缩阶段的完成刻”和到达时的最终边界；若安全区不再收缩，final_tick 为 -1。
+以下是游戏后期某一刻（第217 tick）的完整输入数据示例：
 
-#### 5. 输入示例
+​    39
+​    17
+​    19 16 1 4
+​    12 31 -1 25
+​    14 19 3 11
+​    14 17 1 11
+​    5 16 5 20
+​    16 14 -1 40
+​    13 30 3 26
+​    9 32 -2 46
+​    17 14 1 35
+​    14 14 1 38
+​    23 21 3 38
+​    22 32 2 44
+​    11 18 3 50
+​    19 30 1 53
+​    10 21 -5 -1
+​    5 13 -3 -1
+​    19 11 -3 -1
+​    1
+​    2000000000 9 82 0 0 0
+​    17 17
+​    17 18
+​    17 19
+​    17 20
+​    17 21
+​    17 22
+​    17 23
+​    17 24
+​    17 25
+​    1
+​    10 21 30
+​    2
+​    5 13 -1 0
+​    19 11 -1 0
+​    7 5 32 24
+​    228 8 5 31 24
+​    241 10 7 29 22
+​    1 5 13
 
-以下为游戏后期某一刻（第 217 tick）的完整输入数据示例：
+**数据解读：**
 
-```
-39
-17
-19 16 1 4
-12 31 -1 25
-14 19 3 11
-14 17 1 11
-5 16 5 20
-16 14 -1 40
-13 30 3 26
-9 32 -2 46
-17 14 1 35
-14 14 1 38
-23 21 3 38
-22 32 2 44
-11 18 3 50
-19 30 1 53
-10 21 -5 -1
-5 13 -3 -1
-19 11 -3 -1
-1
-2000000000 9 82 0 0 0
-17 17
-17 18
-17 19
-17 20
-17 21
-17 22
-17 23
-17 24
-17 25
-1
-10 21 30
-2
-5 13 -1 0
-19 11 -1 0
-7 5 32 24
-228 8 5 31 24
-241 10 7 29 22
-1 5 13
-```
+-   **游戏进程**: 剩余 **39** tick（当前是第 217 tick）。
+-   **物品**: 场上共有 **17**
+    个物品，包括高分食物、增长豆、陷阱(`-2`)、一个宝箱(`-5`)和两把在地上的钥匙(`-3`)。
+-   **蛇**: 场上有 **1** 条蛇。
+    -   **ID 2000000000**: 长度为 **9**，分数为
+        **82**。当前朝向左(0)，护盾可用。
+-   **宝箱与钥匙**: 场上有 **1** 个价值30分的宝箱，和 **2**
+    把都在地上的钥匙（holder_id = -1）。
+-   **安全区**:
+    -   当前安全区为 `7 5 32 24`。
+    -   最终的收缩将在第 **228** tick 开始（边界变为
+        `8 5 31 24`），并将在第 **241** tick 完成，最终边界为
+        `10 7 29 22`。
+-   **Memory数据**: 上一回合存储了 `1 5 13`。
 
-数据解读：
+# 三、输出格式
 
-- 游戏进程：剩余 39 tick（当前是第 256-39=217 tick）。
-- 物品：场上共有 17 个物品，包括高分食物、增长豆、陷阱（-2）、一个宝箱（-5）和两把在地上的钥匙（-3）。
-- 蛇：场上有 1 条蛇。
-  - ID 2000000000：长度为 9，分数为 82。当前朝向左（0），护盾可用。
-- 宝箱与钥匙：场上有 1 个价值 30 分的宝箱，和 2 把都在地上的钥匙（holder_id = -1）。
-- 安全区：当前安全区为 7 5 32 24。最终的收缩将在第 228 tick 开始（届时边界变为 8 5 31 24），并将在第 241 tick 完成，最终边界为 10 7 29 22。
-- Memory 数据：上一回合存储了 1 5 13。
+您的算法程序需要向标准输出（stdout）打印一个整数作为本回合的决策。
 
-### 三、输出格式
+-   `0`：向左移动
+-   `1`：向上移动
+-   `2`：向右移动
+-   `3`：向下移动
+-   `4`：激活护盾 (在原地停留一回合)
 
-您的算法程序需要向标准输出（stdout）打印一个整数作为本回合的决策，并以换行结束：
-
-- 0：向左移动
-- 1：向上移动
-- 2：向右移动
-- 3：向下移动
-- 4：激活护盾（在原地停留一回合）
-
-### 四、持久化存储（Memory 系统）
+# 四、持久化存储 (Memory 系统)
 
 为了支持需要跨回合记忆状态的复杂算法，平台提供了一个持久化存储（Memory）系统。每个算法实例在单局游戏中都拥有一块独立的、可读写的数据空间。
 
-#### 1. 数据写入
+## 1. 数据写入
 
-在您的程序输出决策（0-4 的整数）并换行后，可以继续输出任意格式的字符串。这部分字符串将被系统捕获并存入您的专属 Memory 空间。请注意：每次写入都会完全覆盖上一次存储的内容。
+在您的程序输出决策（0-4的整数）并换行后，可以继续输出任意格式的字符串。这部分字符串将被系统捕获并存入您的专属
+Memory 空间。\
+**请注意：每次写入都会完全覆盖上一次存储的内容。**
 
 例如，输出以下内容：
 
-```
-2
-TARGET:10,20;STATE:ATTACK;PREV_SCORE:150
-```
+​    2
+​    TARGET:10,20;STATE:ATTACK;PREV_SCORE:150
 
-系统会将决策 2（向右）提交给游戏引擎，并将第二行的字符串 TARGET:10,20;STATE:ATTACK;PREV_SCORE:150 存入您的 Memory 中。
+系统会将决策 `2` 提交给游戏引擎，并将第二行的字符串
+`TARGET:10,20;STATE:ATTACK;PREV_SCORE:150` 存入您的 Memory 中。
 
-请注意，这里只是一个示例，实际可以存储任意文本格式的内容。最大限制为 4KB。
+## 2. 数据读取
 
-#### 2. 数据读取
+在下一个游戏刻，您上一回合存储的内容将会被原样附加到标准输入的末尾。\
+在游戏的第一个游戏刻，由于没有前一回合的存储，Memory 部分将为空。
 
-在下一个游戏刻，您上一回合存储的内容将会被原样附加到标准输入的末尾，位于所有常规游戏状态信息（安全区信息等）之后。
+# 五、限制与错误处理
 
-在游戏的第一个游戏刻，由于没有前一回合的存储，Memory 部分将为空（即输入在安全区信息后直接结束）。
+## 1. 资源限制
 
-### 五、限制与错误处理
+-   中央处理器时间限制：1秒
+-   内存限制：1GB
+-   墙上时钟限制：5秒
 
-1. 资源限制
-
-- 中央处理器时间限制：1 秒
-- 内存限制：1 GB
-- 墙上时钟限制：5 秒
-
-2. 决策失败
+## 2. 决策失败
 
 如果算法程序出现以下情况，您的蛇将被判定为决策失败并立即死亡：
 
-- 程序崩溃或异常退出。
-- 超出时间或内存限制。
-- 输出了无效的决策值。
-- 决策直接导致撞上地图边界或其他致命障碍物。
+-   程序崩溃或异常退出。
+-   超出时间或内存限制。
+-   输出了无效的决策值。
+-   决策直接导致撞上地图边界或其他致命障碍物。
 
-### 六、运行环境与编译
+# 六、运行环境与编译
 
-1. 运行环境
+## 1. 运行环境
 
-您的代码将在 x86-64 架构的 Linux 服务器上编译和运行。我们使用的编译器版本为 g++ 14.2.0。
+您的代码将在 **x86-64** 架构的 Linux 服务器上编译和运行。\
+我们使用的编译器版本为 **g++ 14.2.0**。
 
-2. 编译命令
+## 2. 编译命令
 
-平台将使用以下命令来编译您的 .cpp 文件。请确保您的代码能够在此环境与编译选项下正常工作：
+平台将使用以下命令来编译您的 `.cpp` 文件：
 
-```bash
-g++ -std=c++23 -O2 -Wall your_file.cpp -o program
+​    g++ -std=c++23 -O2 -Wall your_file.cpp -o program
+
+------------------------------------------------------------------------
+
+# C++ 算法模板
+
+``` cpp
+#include <chrono>
+#include <iostream>
+#include <random>
+#include <unordered_map>
+#include <vector>
+
+using namespace std;
+
+// 常量
+constexpr int MAXN = 40;
+constexpr int MAXM = 30;
+constexpr int MAX_TICKS = 256;
+constexpr int MYID = 2000000000; // 此处替换为你的学号！
+
+struct Point {
+  int y, x;
+};
+
+struct Item {
+  Point pos;
+  int value;
+  int lifetime;
+};
+
+struct Snake {
+  int id;
+  int length;
+  int score;
+  int direction;
+  int shield_cd;
+  int shield_time;
+  bool has_key;
+  vector<Point> body;
+
+  const Point &get_head() const { return body.front(); }
+};
+
+struct Chest {
+  Point pos;
+  int score;
+};
+
+struct Key {
+  Point pos;
+  int holder_id;
+  int remaining_time;
+};
+
+struct SafeZoneBounds {
+  int x_min, y_min, x_max, y_max;
+};
+
+struct GameState {
+  int remaining_ticks;
+  vector<Item> items;
+  vector<Snake> snakes;
+  vector<Chest> chests;
+  vector<Key> keys;
+  SafeZoneBounds current_safe_zone;
+  int next_shrink_tick;
+  SafeZoneBounds next_safe_zone;
+  int final_shrink_tick;
+  SafeZoneBounds final_safe_zone;
+
+  int self_idx;
+
+  const Snake &get_self() const { return snakes[self_idx]; }
+};
+
+void read_game_state(GameState &s) {
+  cin >> s.remaining_ticks;
+
+  int item_count;
+  cin >> item_count;
+  s.items.resize(item_count);
+  for (int i = 0; i < item_count; ++i) {
+    cin >> s.items[i].pos.y >> s.items[i].pos.x >>
+        s.items[i].value >> s.items[i].lifetime;
+  }
+
+  int snake_count;
+  cin >> snake_count;
+  s.snakes.resize(snake_count);
+  unordered_map<int, int> id2idx;
+  id2idx.reserve(snake_count * 2);
+
+  for (int i = 0; i < snake_count; ++i) {
+    auto &sn = s.snakes[i];
+    cin >> sn.id >> sn.length >> sn.score >> sn.direction >> sn.shield_cd >>
+        sn.shield_time;
+    sn.body.resize(sn.length);
+    for (int j = 0; j < sn.length; ++j) {
+      cin >> sn.body[j].y >> sn.body[j].x;
+    }
+    if (sn.id == MYID)
+      s.self_idx = i;
+    id2idx[sn.id] = i;
+  }
+
+  int chest_count;
+  cin >> chest_count;
+  s.chests.resize(chest_count);
+  for (int i = 0; i < chest_count; ++i) {
+    cin >> s.chests[i].pos.y >> s.chests[i].pos.x >>
+        s.chests[i].score;
+  }
+
+  int key_count;
+  cin >> key_count;
+  s.keys.resize(key_count);
+  for (int i = 0; i < key_count; ++i) {
+    auto& key = s.keys[i];
+    cin >> key.pos.y >> key.pos.x >> key.holder_id >> key.remaining_time;
+    if (key.holder_id != -1) {
+      auto it = id2idx.find(key.holder_id);
+      if (it != id2idx.end()) {
+        s.snakes[it->second].has_key = true;
+      }
+    }
+  }
+
+  cin >> s.current_safe_zone.x_min >> s.current_safe_zone.y_min >>
+      s.current_safe_zone.x_max >> s.current_safe_zone.y_max;
+  cin >> s.next_shrink_tick >> s.next_safe_zone.x_min >>
+      s.next_safe_zone.y_min >> s.next_safe_zone.x_max >>
+      s.next_safe_zone.y_max;
+  cin >> s.final_shrink_tick >> s.final_safe_zone.x_min >>
+      s.final_safe_zone.y_min >> s.final_safe_zone.x_max >>
+      s.final_safe_zone.y_max;
+
+  // 如果上一个 tick 往 Memory 里写入了内容，在这里读取，注意处理第一个 tick
+  // 的情况 if (s.remaining_ticks < MAX_TICKS) {
+  //     // 处理 Memory 读取
+  // }
+}
+
+int main() {
+  // 读取当前 tick 的所有游戏状态
+  GameState current_state;
+  read_game_state(current_state);
+
+  // 随机选择一个方向作为决策
+  mt19937 rng(chrono::steady_clock::now().time_since_epoch().count());
+  uniform_int_distribution<int> dist(0, 3);
+  int decision = dist(rng);
+  cout << decision << endl;
+  // C++ 23 也可使用 std::print
+  // 如果需要写入 Memory，在此处写入
+
+  return 0;
+}
 ```
