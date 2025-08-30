@@ -237,14 +237,23 @@ private:
     for (const auto& item : state.items) {
       // 普通食物和增长豆
       if ((item.value > 0 || item.value == -1) && map_analyzer.is_safe(item.pos)) {
-        Target t;
-        t.pos = item.pos;
-        t.value = item.value > 0 ? item.value : 3;  // 增长豆价值设为3
-        t.distance = manhattan_distance(head, item.pos);
-        
-        // 计算优先级：价值/距离的比率
-        double safety_factor = map_analyzer.is_safe(item.pos) ? 1.0 : 0.2;
-        t.priority = (double)t.value / (t.distance + 1) * safety_factor;
+                 Target t;
+         t.pos = item.pos;
+         t.value = item.value > 0 ? item.value : 3;  // 增长豆价值设为3
+         t.distance = manhattan_distance(head, item.pos);
+         
+         // 计算优先级：优化近距离食物的权重
+         double safety_factor = map_analyzer.is_safe(item.pos) ? 1.0 : 0.2;
+         
+         // 非线性提升近距离食物的优先级
+         double distance_factor;
+         if (t.distance <= 5) {
+           distance_factor = 10.0 / (t.distance + 1);  // +1避免除以零
+         } else {
+           distance_factor = 5.0 / t.distance;
+         }
+         
+         t.priority = t.value * distance_factor * safety_factor;
         
         potential_targets.push_back(t);
       }
