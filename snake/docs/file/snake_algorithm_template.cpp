@@ -139,10 +139,11 @@ int main() {
   GameState current_state;
   read_game_state(current_state);
 
-  // 随机选择一个方向作为决策
+  // 决策(随机)
   mt19937 rng(chrono::steady_clock::now().time_since_epoch().count());
   uniform_int_distribution<int> dist(0, 3);
   int decision = dist(rng);
+
   cout << decision << endl;
   // C++ 23 也可使用 std::print
   // 如果需要写入 Memory，在此处写入

@@ -11,6 +11,8 @@
 #include <cstring>
 #include <cmath>
 #include <set>
+#include <unordered_set>
+#include <climits>
 
 using namespace std;
 
@@ -25,17 +27,69 @@ constexpr int MOVE_SPEED = 2; // 蛇每次移动的速度
 struct Point {
   int y, x;
   
-  // 添加运算符重载以支持相等比较
+  // 运算符重载（相等比较）
   bool operator==(const Point& other) const {
     return y == other.y && x == other.x;
   }
   
-  // 用于哈希表的哈希函数
+  // 哈希函数（哈希表）
   struct Hash {
     size_t operator()(const Point& p) const {
       return hash<int>()(p.y) ^ hash<int>()(p.x);
     }
   };
+};
+
+//* 以下是模板代码中的基本定义，不可动
+struct Item {
+  Point pos;
+  int value;
+  int lifetime;
+};
+
+struct Snake {
+  int id;
+  int length;
+  int score;
+  int direction;
+  int shield_cd;
+  int shield_time;
+  bool has_key;
+  vector<Point> body;
+
+  const Point &get_head() const { return body.front(); }
+};
+
+struct Chest {
+  Point pos;
+  int score;
+};
+
+struct Key {
+  Point pos;
+  int holder_id;
+  int remaining_time;
+};
+
+struct SafeZoneBounds {
+  int x_min, y_min, x_max, y_max;
+};
+
+struct GameState {
+  int remaining_ticks;
+  vector<Item> items;
+  vector<Snake> snakes;
+  vector<Chest> chests;
+  vector<Key> keys;
+  SafeZoneBounds current_safe_zone;
+  int next_shrink_tick;
+  SafeZoneBounds next_safe_zone;
+  int final_shrink_tick;
+  SafeZoneBounds final_safe_zone;
+
+  int self_idx;
+
+  const Snake &get_self() const { return snakes[self_idx]; }
 };
 
 //? 基础工具函数
@@ -44,7 +98,7 @@ int manhattan_distance(const Point& p1, const Point& p2) {
   return abs(p1.y - p2.y) + abs(p1.x - p2.x);
 }
 
-// 根据方向获取下一个位置
+// 移动（根据方向获取下一个位置）
 Point get_next_position(const Point& p, int direction) {
   switch (direction) {
     case 0: return {p.y, p.x - MOVE_SPEED};  // 左，移动2个单位
@@ -55,7 +109,7 @@ Point get_next_position(const Point& p, int direction) {
   }
 }
 
-// 获取从当前点到目标点的方向
+// 转向（获取从当前点到目标点的方向）
 int get_next_direction(const Point& current, const Point& next) {
   if (next.x < current.x) return 0;  // 左
   if (next.y < current.y) return 1;  // 上
@@ -76,12 +130,12 @@ public:
     memset(danger_map, 0, sizeof(danger_map));
   }
 
-  // 分析地图并更新危险度矩阵
+  // 分析地图（更新危险度矩阵）
   void analyze(const GameState& state) {
     // 初始化危险度矩阵
-    memset(danger_map, 0, sizeof(danger_map));
+    memset(danger_map, 0, sizeof(danger_map));//! 每次重画整个地图是不是太浪费了？
     
-    // 1. 标记安全区外为极度危险
+    // 1. 安全区外
     for (int x = 0; x < MAXN; x++) {
       for (int y = 0; y < MAXM; y++) {
         if (x < state.current_safe_zone.x_min || x > state.current_safe_zone.x_max ||
@@ -92,7 +146,7 @@ public:
       }
     }
     
-    // 2. 标记宝箱为极度危险区域（对未持有钥匙的蛇）
+    // 2. 宝箱（对未持有钥匙的蛇）
     for (const auto& chest : state.chests) {
       if (!state.get_self().has_key) {
         danger_map[chest.pos.x][chest.pos.y] = 255; //! 可调参数
@@ -100,15 +154,15 @@ public:
       }
     }
     
-    // 3. 标记其他蛇的位置为危险区域
+    // 3. 其他蛇
     for (const auto& snake : state.snakes) {
       if (snake.id == MYID) continue;  // 跳过自己
       
-      // 蛇身体
+      // 他蛇身体
       for (const auto& body_part : snake.body) {
         danger_map[body_part.x][body_part.y] = 100; //! 可调参数
         
-        // 蛇头周围的区域也标记为危险
+        // 他蛇头周围的区域也标记为危险
         if (body_part == snake.get_head()) {
           for (int dir = 0; dir < 4; dir++) {
             Point next = get_next_position(body_part, dir);
@@ -121,18 +175,20 @@ public:
       }
     }
     
-    // 4. 标记陷阱为危险区域
+    // 4. 陷阱
     for (const auto& item : state.items) {
       if (item.value == -2) {  // 陷阱
-        danger_map[item.pos.x][item.pos.y] = 80;
+        danger_map[item.pos.x][item.pos.y] = 80;//! 可调参数
       }
     }
     
-    // 5. 处理安全区收缩
+    // 5. 安全区收缩（大有可为，故单拎出来）
     analyze_safe_zone_shrinking(state);
   }
   
   // 分析安全区收缩情况，更新危险度矩阵
+  //! 安全区收缩视情况调整复杂性（最简单：直接看时间，统一加大危险度，使得蛇自动往中间跑
+  //!  甚至可以考虑直接把待收缩区标为死区）
   void analyze_safe_zone_shrinking(const GameState& state) {
     int current_tick = MAX_TICKS - state.remaining_ticks;
     
@@ -140,18 +196,19 @@ public:
     if (state.next_shrink_tick > 0) {
       int ticks_until_shrink = state.next_shrink_tick - current_tick;
       
-      // 根据收缩紧急程度设置危险度
+      // 危险度（根据收缩紧急程度）（时间越近，危险度越高）
       int danger_level = 0;
       
-      if (ticks_until_shrink <= 3) {
-        danger_level = 220;  // 非常危险，马上收缩
-      } else if (ticks_until_shrink <= 10) {
-        danger_level = 150;  // 很危险，快收缩了
-      } else if (ticks_until_shrink <= 20) {
-        danger_level = 100;  // 中等危险，需要注意
-      } else {
-        danger_level = 30;   // 低危险，收缩还远
-      }
+      //! 可调函数
+      if (ticks_until_shrink <= 3) {// 非常危险，马上收缩
+        danger_level = 220;  //! 可调参数
+      } else if (ticks_until_shrink <= 10) { // 很危险，快收缩了
+        danger_level = 150; //! 可调参数
+      } else if (ticks_until_shrink <= 20) {// 中等危险，需要注意
+        danger_level = 100;  //! 可调参数
+      } else { // 低危险，收缩还远
+        danger_level = 30;  //! 可调参数
+      }//! 当前危险度计算方法：时间&危险度 分段函数   看效果可改成其他函数
       
       // 标记即将被收缩的区域
       for (int x = 0; x < MAXN; x++) {
@@ -167,7 +224,8 @@ public:
       }
       
       // 特别处理收缩区域边缘，使蛇尽量不靠近收缩边界
-      int buffer = 2;  // 边缘缓冲区大小
+      // 边缘缓冲区大小
+      int buffer = 2;  //! 可调参数（边缘有多大）
       for (int x = state.current_safe_zone.x_min; x <= state.current_safe_zone.x_max; x++) {
         for (int y = state.current_safe_zone.y_min; y <= state.current_safe_zone.y_max; y++) {
           // 检查是否在下一个安全区内
@@ -178,7 +236,7 @@ public:
                 x >= state.next_safe_zone.x_max - buffer ||
                 y <= state.next_safe_zone.y_min + buffer || 
                 y >= state.next_safe_zone.y_max - buffer) {
-              danger_map[x][y] += danger_level / 2;  // 边缘也有一定危险
+              danger_map[x][y] += danger_level / 2;  //! 可调函数
             }
           }
         }
@@ -186,9 +244,9 @@ public:
     }
     
     // 处理游戏后期的安全区策略
-    if (state.final_shrink_tick > 0 && current_tick > 200) {
+    if (state.final_shrink_tick > 0 && current_tick > 200) {//! 可调函数
       // 游戏后期，给最终安全区外的区域增加危险度
-      int final_danger = 50;  // 最终收缩区外的额外危险度
+      int final_danger = 50;  // 额外危险度（最终收缩区外的）//! 可调函数
       
       for (int x = state.next_safe_zone.x_min; x <= state.next_safe_zone.x_max; x++) {
         for (int y = state.next_safe_zone.y_min; y <= state.next_safe_zone.y_max; y++) {
@@ -209,7 +267,8 @@ public:
     }
     
     // 根据危险度判断安全性
-    return danger_map[p.x][p.y] < 80;  // 小于80的危险度视为安全
+    return danger_map[p.x][p.y] < 80;  //! 可调函数
+    // 小于80的危险度视为安全
   }
   
   // 获取点的危险度
@@ -257,26 +316,28 @@ public:
   }
 
 private:
-  int danger_map[MAXN][MAXM];  // 地图危险度矩阵
+// 地图危险度矩阵
+  int danger_map[MAXN][MAXM]; 
+  //! 二维数组是否低效？ 
 };
 
-// 路径规划类
+//? 路径规划类
 class PathFinder {
 public:
   PathFinder(MapAnalyzer& analyzer) : map_analyzer(analyzer) {}
   
-  // 考虑整格点转向限制的路径搜索
-  vector<Point> find_path(const Point& start, const Point& goal, const GameState& state) {
+  // 路径搜索 (考虑整格点转向限制)
+  vector<Point> find_path(const Point& start, const Point& goal, const GameState& /* state */) {
     // 若起点终点相同，返回空路径
     if (start.x == goal.x && start.y == goal.y) {
       return {};
     }
-    
+    //! 可调函数 (是否有比A*算法更好的算法？)
     struct Node {
       Point pos;
       int g_cost;    // 从起点到当前点的代价
       int h_cost;    // 启发式估计到目标的代价
-      int f_cost;    // f = g + h
+      int f_cost;    // f = g + h  //! 可调函数（简单相加？）
       int direction; // 当前方向 (0-3)
       Node* parent;
       
@@ -288,7 +349,7 @@ public:
       }
     };
     
-    // A*算法实现
+    //? A*算法实现
     priority_queue<Node> open_list;
     
     // 为了处理整格点转向限制，状态需要包含位置和方向
@@ -413,8 +474,9 @@ public:
     return path;
   }
   
+  //!  是否有必要保留？
   // 保留简单版本的路径搜索（不考虑整格点转向限制）
-  vector<Point> find_simple_path(const Point& start, const Point& goal, const GameState& state) {
+  vector<Point> find_simple_path(const Point& start, const Point& goal, const GameState& /* state */) {
     // 若起点终点相同，返回空路径
     if (start.x == goal.x && start.y == goal.y) {
       return {};
@@ -572,7 +634,7 @@ private:
   MapAnalyzer& map_analyzer;
 };
 
-// 目标结构体
+//? 目标结构体
 struct Target {
   Point pos;
   int value;  // 目标价值
@@ -580,17 +642,17 @@ struct Target {
   double priority;  // 综合优先级
 };
 
-// SnakeAI类：主要决策逻辑
+//? SnakeAI类：主要决策逻辑
 class SnakeAI {
 public:
   SnakeAI() : map_analyzer(), path_finder(map_analyzer) {}
   
   // 做出决策
   int make_decision(const GameState& state) {
-    // 读取记忆数据（从第二个tick开始）
+    /* // 读取记忆数据（从第二个tick开始）
     if (state.remaining_ticks < MAX_TICKS) {
       read_memory();
-    }
+    } */
     
     // 分析地图
     map_analyzer.analyze(state);
@@ -599,13 +661,13 @@ public:
     const auto& self = state.get_self();
     const auto& head = self.get_head();
     
-    // 检查是否应该使用护盾
+    /* // 检查是否应该使用护盾
     if (should_use_shield(state)) {
       save_memory(state, 4);
       return 4;  // 激活护盾
-    }
+    } */
     
-    // 检查当前路径是否仍然有效
+    // 当前路径有效性检查
     bool need_new_path = current_path.empty() || 
                          !is_target_still_valid(current_target, state) ||
                          !is_path_still_safe(current_path, state);
@@ -619,7 +681,7 @@ public:
       // 如果找不到目标，随机移动
       if (target.pos.x == -1 && target.pos.y == -1) {
         int safe_dir = find_safe_direction(state);
-        save_memory(state, safe_dir);
+        // save_memory 函数已被注释掉，不再调用
         return safe_dir;
       }
       
@@ -627,6 +689,7 @@ public:
       vector<Point> path = path_finder.find_path(head, target.pos, state);
       current_path = path;
       
+      //! 尽量让路径可以规划
       // 如果无法规划路径，退回到简单路径
       if (path.empty()) {
         path = path_finder.find_simple_path(head, target.pos, state);
@@ -635,7 +698,7 @@ public:
         // 如果仍然无法规划路径，找一个安全的方向
         if (path.empty()) {
           int safe_dir = find_safe_direction(state);
-          save_memory(state, safe_dir);
+          // save_memory 函数已被注释掉，不再调用
           return safe_dir;
         }
       }
@@ -654,12 +717,12 @@ public:
       next_dir = find_safe_direction(state);
     }
     
-    // 保存记忆数据并返回决策
-    save_memory(state, next_dir);
+    /* // 保存记忆数据并返回决策
+    save_memory(state, next_dir); */
     return next_dir;
   }
   
-  // 判断是否应该使用护盾
+  /* // 判断是否应该使用护盾
   bool should_use_shield(const GameState& state) {
     const auto& self = state.get_self();
     
@@ -749,7 +812,7 @@ public:
     }
     
     return false;
-  }
+  } */
   
   // 选择最优目标
   Target select_target(const GameState& state) {
@@ -758,7 +821,7 @@ public:
     const auto& self = state.get_self();
     const auto& head = self.get_head();
     
-    // 添加食物作为潜在目标
+    // 食物
     for (const auto& item : state.items) {
       // 普通食物和增长豆
       if (item.value > 0 || item.value == -1) {
@@ -769,18 +832,20 @@ public:
         
         // 计算优先级：价值/距离的比率，再考虑安全因素
         double safety_factor = map_analyzer.is_safe(item.pos) ? 1.0 : 0.2;
+        //! 可调函数（ priority，value，distance，safety_factor ）
         t.priority = (double)t.value / t.distance * safety_factor;
         
         potential_targets.push_back(t);
       }
     }
     
-    // 添加钥匙作为潜在目标
+    // 钥匙&宝箱（大有可为，故单拎出来）
     handle_keys_and_chests(state, head, potential_targets);
     
-    // 根据安全区收缩情况，考虑添加安全区中心作为目标
+    // 安全区收缩情况，考虑添加安全区中心作为目标
     int current_tick = MAX_TICKS - state.remaining_ticks;
-    if (state.next_shrink_tick > 0 && state.next_shrink_tick - current_tick <= 20) {
+    if (state.next_shrink_tick > 0 && state.next_shrink_tick - current_tick <= 20) {//! 可调参数
+      //! 有必要以安全区中心作为目标吗？还是进安全区就行
       // 安全区即将收缩，添加下一个安全区中心作为目标
       Point next_center = {
         (state.next_safe_zone.y_min + state.next_safe_zone.y_max) / 2,
@@ -788,17 +853,20 @@ public:
       };
       
       Target t;
-      t.pos = next_center;
-      t.value = 10;  // 安全区价值
+      t.pos = next_center;//! 有必要以安全区中心作为目标吗？还是进安全区就行
+      // 安全区价值
+      t.value = 10;  //! 可调参数
       t.distance = manhattan_distance(head, next_center);
       
       // 安全区收缩越近，优先级越高
       double urgency_factor = 1.0;
       int ticks_until_shrink = state.next_shrink_tick - current_tick;
-      if (ticks_until_shrink <= 5) {
-        urgency_factor = 3.0;  // 非常紧急
-      } else if (ticks_until_shrink <= 10) {
-        urgency_factor = 2.0;  // 较为紧急
+      if (ticks_until_shrink <= 5) { //! 可调参数
+        urgency_factor = 3.0;   //! 可调参数
+        // 非常紧急
+      } else if (ticks_until_shrink <= 10) { //! 可调参数
+        urgency_factor = 2.0;   //! 可调参数
+        // 较为紧急
       }
       
       // 检查自己是否在即将收缩的区域外
@@ -807,10 +875,11 @@ public:
         head.y < state.next_safe_zone.y_min || head.y > state.next_safe_zone.y_max;
       
       if (is_outside_next_zone) {
-        urgency_factor *= 2.0;  // 如果在收缩区外，加倍紧急
+        urgency_factor *= 2.0;   //! 可调参数
+        // 如果在收缩区外，加倍紧急
       }
       
-      t.priority = (double)t.value / t.distance * urgency_factor;
+      t.priority = (double)t.value / t.distance * urgency_factor;//! 可调函数
       
       potential_targets.push_back(t);
     }
@@ -831,12 +900,12 @@ public:
     return best_target;
   }
   
-  // 处理钥匙和宝箱的目标选择
+  // 钥匙&宝箱处理
   void handle_keys_and_chests(const GameState& state, const Point& head, vector<Target>& targets) {
     const auto& self = state.get_self();
     int current_tick = MAX_TICKS - state.remaining_ticks;
     
-    // 游戏阶段因子（后期更重视宝箱和钥匙）
+    // 游戏阶段因子（后期更重视宝箱和钥匙）//! 后期更重视宝箱和钥匙，有必要吗？
     double game_stage_factor = 1.0;
     if (current_tick > 200) {
       game_stage_factor = 2.0;  // 后期
@@ -866,9 +935,9 @@ public:
         
         // 根据钥匙剩余时间调整优先级
         double time_urgency = 1.0;
-        if (key_remaining_time <= 5) {
+        if (key_remaining_time <= 5) { //! 可调参数
           time_urgency = 3.0;  // 非常紧急，钥匙即将掉落
-        } else if (key_remaining_time <= 10) {
+        } else if (key_remaining_time <= 10) { //! 可调参数
           time_urgency = 2.0;  // 较为紧急
         }
         
@@ -883,7 +952,7 @@ public:
           }
         }
         
-        // 如果有竞争者且他们离宝箱更近，提高优先级
+        // 如果有竞争者且他们离宝箱更近，提高优先级 //! 可调函数
         double competition_factor = 1.0;
         if (competitors) {
           if (competitor_distance < t.distance) {
@@ -901,11 +970,13 @@ public:
         double safety_factor = map_analyzer.is_safe(t.pos) ? 1.0 : 0.3;
         
         // 宝箱分数越高优先级越高
-        double score_factor = (double)t.value / 50.0;  // 标准化分数
+        double score_factor = (double)t.value / 50.0;  //! 可调参数
+        // 标准化分数
         
         // 综合计算优先级
         t.priority = score_factor * game_stage_factor * time_urgency * competition_factor * safety_factor / sqrt(t.distance);
-        
+         //! 可调函数
+
         targets.push_back(t);
       }
     }
@@ -916,7 +987,8 @@ public:
         if (key.holder_id == -1) {  // 钥匙在地图上
           Target t;
           t.pos = key.pos;
-          t.value = 20;  // 基础钥匙价值
+          t.value = 20;  //! 可调参数
+          // 基础钥匙价值
           t.distance = manhattan_distance(head, key.pos);
           
           double key_priority = 1.0;
@@ -934,12 +1006,12 @@ public:
               max_chest_score = max(max_chest_score, chest.score);
             }
             
-            // 钥匙离宝箱越近，优先级越高
-            if (min_chest_distance < 20) {
+            // 钥匙离宝箱越近，优先级越高  //! 有必要吗？
+            if (min_chest_distance < 20) {//! 可调参数
               key_priority = 1.5 * (1.0 - (double)min_chest_distance / 20.0);
             }
             
-            // 宝箱分数越高，钥匙优先级越高
+            // 宝箱分数越高，钥匙优先级越高 //! 有必要吗？
             key_priority *= (double)max_chest_score / 50.0;
           }
           
@@ -955,14 +1027,15 @@ public:
             }
           }
           
-          // 有竞争者时提高优先级
+          // 有竞争者时提高优先级 //! 有必要吗？
           double competition_factor = close_competitors ? 1.5 : 1.0;
           
           double safety_factor = map_analyzer.is_safe(t.pos) ? 1.0 : 0.3;
           
           // 综合计算优先级
           t.priority = key_priority * game_stage_factor * competition_factor * safety_factor / sqrt(t.distance);
-          
+          //! 可调函数
+
           targets.push_back(t);
         }
       }
@@ -984,7 +1057,8 @@ public:
       // 只考虑食物（正分数或增长豆）
       if (item.value > 0 || item.value == -1) {
         int dist = manhattan_distance(head, item.pos);
-        int value = item.value > 0 ? item.value : 3;  // 增长豆价值设为3
+        int value = item.value > 0 ? item.value : 3;  //! 可调参数
+        // 增长豆价值设为3
         
         // 如果路径不安全，跳过
         if (!map_analyzer.is_safe(item.pos)) {
@@ -1010,18 +1084,18 @@ public:
     const auto& head = self.get_head();
     Point next = get_next_position(head, direction);
     
-    // 检查是否在地图范围内
+    // 地图范围检查
     if (next.x < 0 || next.x >= MAXN || next.y < 0 || next.y >= MAXM) {
       return false;
     }
     
-    // 检查是否在安全区内
+    // 安全区检查
     if (next.x < state.current_safe_zone.x_min || next.x > state.current_safe_zone.x_max ||
         next.y < state.current_safe_zone.y_min || next.y > state.current_safe_zone.y_max) {
       return false;
     }
     
-    // 检查是否会撞到其他蛇
+    // 其他蛇检查
     for (const auto& snake : state.snakes) {
       if (snake.id == MYID) continue;  // 跳过自己
       
@@ -1032,7 +1106,7 @@ public:
       }
     }
     
-    // 检查是否会撞到宝箱（如果没有钥匙）
+    // 宝箱检查（如果没有钥匙）
     if (!self.has_key) {
       for (const auto& chest : state.chests) {
         if (next.x == chest.pos.x && next.y == chest.pos.y) {
@@ -1041,7 +1115,7 @@ public:
       }
     }
     
-    // 检查是否会撞到陷阱
+    // 陷阱检查
     for (const auto& item : state.items) {
       if (item.value == -2 && next.x == item.pos.x && next.y == item.pos.y) {
         return false;
@@ -1063,6 +1137,7 @@ public:
     }
     
     // 如果没有安全方向，尝试向安全区中心移动
+    //! 有必要以安全区中心作为目标吗？还是进安全区就行
     Point center = {
       (state.current_safe_zone.y_max + state.current_safe_zone.y_min) / 2,
       (state.current_safe_zone.x_max + state.current_safe_zone.x_min) / 2
@@ -1073,6 +1148,7 @@ public:
       return dir;
     }
     
+    //! 尽量避免随机？
     // 实在没有安全方向，随机选择
     mt19937 rng(chrono::steady_clock::now().time_since_epoch().count());
     uniform_int_distribution<int> dist(0, 3);
@@ -1136,7 +1212,7 @@ public:
   }
   
   // 判断当前路径是否仍然安全
-  bool is_path_still_safe(const vector<Point>& path, const GameState& state) {
+  bool is_path_still_safe(const vector<Point>& path, const GameState& /* state */) {
     if (path.empty()) {
       return false;
     }
@@ -1151,7 +1227,7 @@ public:
     return true;
   }
   
-  // 保存记忆数据
+  /* // 保存记忆数据
   void save_memory(const GameState& state, int decision) {
     stringstream ss;
     
@@ -1183,7 +1259,9 @@ public:
     
     memory_data = ss.str();
   }
-  
+   */
+
+  /* 
   // 读取记忆数据
   void read_memory() {
     string memory_line;
@@ -1226,8 +1304,10 @@ public:
         // 可以用于跟踪钥匙状态变化
       }
     }
-  }
-  
+  } 
+    */
+
+private:
   // 成员变量
   string memory_data;  // 记忆数据
   MapAnalyzer map_analyzer;
@@ -1236,56 +1316,6 @@ public:
   vector<Point> current_path;
 };
 
-struct Item {
-  Point pos;
-  int value;
-  int lifetime;
-};
-
-struct Snake {
-  int id;
-  int length;
-  int score;
-  int direction;
-  int shield_cd;
-  int shield_time;
-  bool has_key;
-  vector<Point> body;
-
-  const Point &get_head() const { return body.front(); }
-};
-
-struct Chest {
-  Point pos;
-  int score;
-};
-
-struct Key {
-  Point pos;
-  int holder_id;
-  int remaining_time;
-};
-
-struct SafeZoneBounds {
-  int x_min, y_min, x_max, y_max;
-};
-
-struct GameState {
-  int remaining_ticks;
-  vector<Item> items;
-  vector<Snake> snakes;
-  vector<Chest> chests;
-  vector<Key> keys;
-  SafeZoneBounds current_safe_zone;
-  int next_shrink_tick;
-  SafeZoneBounds next_safe_zone;
-  int final_shrink_tick;
-  SafeZoneBounds final_safe_zone;
-
-  int self_idx;
-
-  const Snake &get_self() const { return snakes[self_idx]; }
-};
 
 void read_game_state(GameState &s) {
   cin >> s.remaining_ticks;
@@ -1354,22 +1384,23 @@ void read_game_state(GameState &s) {
   // }
 }
 
+
 int main() {
   // 读取当前 tick 的所有游戏状态
   GameState current_state;
   read_game_state(current_state);
 
-  // 使用SnakeAI类来做决策
+  // 决策(SnakeAI类)
   static SnakeAI ai;  // 使用静态变量保持状态
   int decision = ai.make_decision(current_state);
 
   // 输出决策
   cout << decision << endl;
   
-  // 输出记忆数据
+  /* // 输出记忆数据
   if (!ai.memory_data.empty()) {
     cout << ai.memory_data << endl;
   }
-
+ */
   return 0;
 }
