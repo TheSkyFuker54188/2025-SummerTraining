@@ -246,15 +246,195 @@ private:
   }
 };
 
+//? 路径规划类
+class PathFinder {
+public:
+  PathFinder(const MapAnalyzer& analyzer) : map_analyzer(analyzer) {}
+  
+  // 简单路径生成
+  vector<Point> find_path(const Point& start, const Point& goal, const GameState& state) {
+    // 如果起点和终点相同，返回空路径
+    if (start.x == goal.x && start.y == goal.y) {
+      return {};
+    }
+    
+    // 创建基础路径
+    vector<Point> basic_path = generate_basic_path(start, goal, state);
+    
+    // 优化转弯点
+    vector<Point> optimized_path = optimize_turning_points(basic_path, state);
+    
+    return optimized_path;
+  }
+
+private:
+  const MapAnalyzer& map_analyzer;
+  
+  // 生成从起点到终点的基础路径
+  vector<Point> generate_basic_path(const Point& start, const Point& goal, const GameState& state) {
+    vector<Point> path;
+    Point current = start;
+    path.push_back(current);
+    
+    // 简单实现：先水平移动到目标的x坐标，然后垂直移动到目标的y坐标
+    // 在实际移动中考虑整格点转向限制
+    
+    // 找到下一个整格点
+    Point next_grid_point = current;
+    if (!is_grid_point(current)) {
+      // 根据当前方向找到下一个整格点
+      int current_dir = state.get_self().direction;
+      while (!is_grid_point(next_grid_point)) {
+        next_grid_point = get_next_position(next_grid_point, current_dir);
+        if (next_grid_point.x < 0 || next_grid_point.x >= MAXN || 
+            next_grid_point.y < 0 || next_grid_point.y >= MAXM) {
+          // 越界，回退到上一个点
+          break;
+        }
+        path.push_back(next_grid_point);
+      }
+      current = next_grid_point;
+    }
+    
+    // 水平移动到目标的x坐标
+    while (abs(current.x - goal.x) > 2) {
+      int dir = (current.x < goal.x) ? 2 : 0; // 右或左
+      Point next = get_next_position(current, dir);
+      
+      // 检查点是否安全
+      if (!map_analyzer.is_safe(next)) {
+        break; // 不安全，停止路径规划
+      }
+      
+      path.push_back(next);
+      current = next;
+    }
+    
+    // 垂直移动到目标的y坐标
+    while (abs(current.y - goal.y) > 2) {
+      int dir = (current.y < goal.y) ? 3 : 1; // 下或上
+      Point next = get_next_position(current, dir);
+      
+      // 检查点是否安全
+      if (!map_analyzer.is_safe(next)) {
+        break; // 不安全，停止路径规划
+      }
+      
+      path.push_back(next);
+      current = next;
+    }
+    
+    // 最后添加目标点
+    if (current.x != goal.x || current.y != goal.y) {
+      path.push_back(goal);
+    }
+    
+    return path;
+  }
+  
+  // 转弯点优化
+  vector<Point> optimize_turning_points(const vector<Point>& original_path, const GameState& state) {
+    if (original_path.size() < 3) return original_path;
+    
+    vector<Point> optimized_path;
+    optimized_path.push_back(original_path[0]);
+    
+    for (size_t i = 1; i < original_path.size() - 1; i++) {
+      Point prev = original_path[i-1];
+      Point current = original_path[i];
+      Point next = original_path[i+1];
+      
+      // 检测是否为转弯点
+      int dir_in = get_direction(prev, current);
+      int dir_out = get_direction(current, next);
+      
+      if (dir_in != dir_out && is_grid_point(current)) {
+        // 这是个转弯点，尝试优化
+        Point early_turn = find_early_turning_point(prev, current, next, state);
+        if (early_turn.x != -1 && early_turn.y != -1) {  // 有效点
+          optimized_path.push_back(early_turn);
+        } else {
+          optimized_path.push_back(current);  // 无法优化，保持原转弯点
+        }
+      } else {
+        optimized_path.push_back(current);
+      }
+    }
+    
+    // 添加终点
+    if (!original_path.empty()) {
+      optimized_path.push_back(original_path.back());
+    }
+    
+    return optimized_path;
+  }
+  
+  // 查找可能的提前转向点
+  Point find_early_turning_point(const Point& prev, const Point& turn, const Point& next, const GameState& state) {
+    // 获取进入和输出方向
+    int dir_in = get_direction(prev, turn);
+    int dir_out = get_direction(turn, next);
+    
+    // 检查是否是有效的转向（直角转向）
+    if (abs(dir_in - dir_out) % 2 != 1) {
+      return {-1, -1};  // 不是直角转向，返回无效点
+    }
+    
+    // 尝试找到一个更早的转向点
+    // 从原转向点向前退1-2步
+    for (int step = 2; step <= 6; step += 2) {
+      Point candidate;
+      
+      // 根据进入方向，从转弯点向后退step步
+      switch (dir_in) {
+        case 0: candidate = {turn.y, turn.x + step}; break;  // 从左来，向右退
+        case 1: candidate = {turn.y + step, turn.x}; break;  // 从上来，向下退
+        case 2: candidate = {turn.y, turn.x - step}; break;  // 从右来，向左退
+        case 3: candidate = {turn.y - step, turn.x}; break;  // 从下来，向上退
+        default: return {-1, -1};
+      }
+      
+      // 检查候选点是否安全
+      if (map_analyzer.is_safe(candidate)) {
+        // 检查从候选点到next是否有安全路径
+        Point after_turn = get_next_position(candidate, dir_out);
+        if (map_analyzer.is_safe(after_turn)) {
+          return candidate;
+        }
+      }
+    }
+    
+    return {-1, -1};  // 没有找到合适的提前转向点
+  }
+};
+
 // 主决策类
 class SnakeAI {
 public:
+  SnakeAI() : path_finder(map_analyzer) {}
+  
   int make_decision(const GameState& state) {
     // 分析地图
     map_analyzer.analyze(state);
     
     // 选择目标
     Target target = select_target(state);
+    
+    // 规划路径
+    const auto& head = state.get_self().get_head();
+    current_path = path_finder.find_path(head, target.pos, state);
+    
+    // 如果有路径，按路径行动
+    if (!current_path.empty()) {
+      // 获取下一个点
+      Point next_point = current_path[0];
+      int next_dir = get_direction(head, next_point);
+      
+      // 检查方向是否安全
+      if (next_dir != -1 && is_direction_safe(next_dir, state)) {
+        return next_dir;
+      }
+    }
     
     // 评估各个方向的安全性并选择最佳方向
     vector<pair<int, double>> direction_scores;
@@ -288,7 +468,7 @@ public:
   }
 
 private:
-    Target select_target(const GameState& state) {
+  Target select_target(const GameState& state) {
     vector<Target> potential_targets;
     const auto& self = state.get_self();
     const auto& head = self.get_head();
@@ -513,6 +693,8 @@ private:
   }
   
   MapAnalyzer map_analyzer;
+  PathFinder path_finder;
+  vector<Point> current_path;
 };
 
 void read_game_state(GameState &s) {
