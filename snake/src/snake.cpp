@@ -384,12 +384,19 @@ private:
   Target select_target(const GameState &state)
   {// 目标选择 - 根据即时反应和综合评估选择最佳目标
     const auto &head = state.get_self().get_head();
+    
+    const double time_buffer_factor = 1.5; // 预估到达时间计算参数 - 考虑转弯和路径不直接带来的额外开销
 
     for (const auto &item : state.items)
     {// 即时反应 - 检测头部附近的食物
       if ((item.value > 0 || item.value == GROWTH_BEAN_VALUE) && map->is_safe(item.pos))
       {
         int dist = Utils::manhattan_distance(head, item.pos);
+        
+        int estimated_time_to_reach = static_cast<int>(dist * time_buffer_factor / MOVE_SPEED);
+        if (estimated_time_to_reach >= item.lifetime)// 检查食物是否能在其生命周期内到达
+          continue; // 来不及吃到，忽略这个食物
+            
         if (dist <= IMMEDIATE_RESPONSE_DISTANCE)
           return {item.pos, item.value > 0 ? item.value : 3, dist, 1000.0};
       }
@@ -409,7 +416,21 @@ private:
           continue;
 
         int distance = Utils::manhattan_distance(head, p);
-        float dist_factor = (distance <= NEAR_FOOD_THRESHOLD) ? NEAR_FOOD_FACTOR / (distance + 1) : FAR_FOOD_FACTOR / distance;
+        
+        bool is_reachable = true;// 对于食物类物品，检查是否能在其生命周期内到达
+        for (const auto &item : state.items) {
+          if (item.pos.y == y && item.pos.x == x) {
+            int estimated_time_to_reach = static_cast<int>(distance * time_buffer_factor / MOVE_SPEED);
+            if (estimated_time_to_reach >= item.lifetime) {
+              is_reachable = false;
+              break;
+            }
+          }
+        }
+        if (!is_reachable)
+          continue; // 来不及吃到，忽略这个食物
+        
+        float dist_factor = (distance <= NEAR_FOOD_THRESHOLD) ? NEAR_FOOD_FACTOR / (distance + 1) : FAR_FOOD_FACTOR / distance; // 计算距离因子，近距离食物优先级更高
 
         targets.push_back({p, pos_value, distance, map->score(p) * dist_factor});
       }
@@ -450,7 +471,7 @@ private:
     if (next.x < state.current_safe_zone.x_min || next.x > state.current_safe_zone.x_max || next.y < state.current_safe_zone.y_min || next.y > state.current_safe_zone.y_max)
       return false; // 检查边界
 
-    if (self.shield_time > 0)
+    if (self.shield_time > 0)//! 有护盾时应该前往安全地方，防止盾消失就死
     {// 有护盾时大部分碰撞可忽略
       for (const auto &chest : state.chests)
         if (!self.has_key && next.x == chest.pos.x && next.y == chest.pos.y)
@@ -458,9 +479,8 @@ private:
       return true;
     }
 
-    
-    for (const auto &snake : state.snakes)// 检查各种碰撞
-    {
+    for (const auto &snake : state.snakes)
+    {//敌人身体
       if (snake.id == MYID)
         continue;
       for (const auto &part : snake.body)
@@ -468,11 +488,7 @@ private:
           return false;
     }
 
-    for (size_t i = 1; i < self.body.size(); i++)
-      if (next.x == self.body[i].x && next.y == self.body[i].y)
-        return false;
-
-    for (const auto &item : state.items)
+    for (const auto &item : state.items)//陷阱 -10
       if (item.value == TRAP_VALUE && next.x == item.pos.x && next.y == item.pos.y)
         return false;
 
