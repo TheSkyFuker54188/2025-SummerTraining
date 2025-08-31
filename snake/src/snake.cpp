@@ -72,7 +72,7 @@ constexpr int CHEST_VALUE_SCORE = 200;           // 宝箱评分价值
 
 // 评分权重参数
 constexpr float DANGER_WEIGHT = 5.0f;   // 危险度权重
-constexpr float VALUE_WEIGHT = 3.0f;    // 价值度权重
+constexpr float VALUE_WEIGHT = 4.0f;    // 价值度权重 - 提高食物价值重要性
 constexpr float CENTRAL_WEIGHT = 1.0f;  // 中心度权重
 constexpr float DISTANCE_WEIGHT = 3.0f; // 距离权重
 constexpr float TURN_BONUS = 2.0f;      // 转向奖励
@@ -455,7 +455,20 @@ private:
           if (estimated_time_to_reach >= item.lifetime)
             continue; // 忽略无法到达的食物
 
-          int base_value = item.value > 0 ? item.value * NORMAL_FOOD_VALUE_MULTIPLIER : get_growth_bean_value(state);
+          int base_value;
+          
+          // 识别高分值食物（蛇尸体通常是高分值食物>=5）
+          if (item.value >= 5) {
+            // 增加高分值食物的权重
+            base_value = item.value * (NORMAL_FOOD_VALUE_MULTIPLIER + 10);
+            // 高分食物优先级加成
+            base_value = static_cast<int>(base_value * 1.5f);
+          } else if (item.value > 0) {
+            base_value = item.value * NORMAL_FOOD_VALUE_MULTIPLIER;
+          } else {
+            base_value = get_growth_bean_value(state);
+          }
+          
           food_points.emplace_back(item.pos, base_value);
         }
       }
@@ -822,6 +835,12 @@ private:
         int estimated_time_to_reach = static_cast<int>(dist * 1.5f / MOVE_SPEED);
         if (estimated_time_to_reach >= item.lifetime)
           continue;
+          
+        // 优先处理高分食物（蛇尸体）
+        if (item.value >= 5 && dist <= IMMEDIATE_RESPONSE_DISTANCE * 2) {
+          // 高分食物有更大的即时响应范围和更高优先级
+          return {item.pos, item.value, dist, 1200.0};
+        }
 
         if (dist <= IMMEDIATE_RESPONSE_DISTANCE)
           return {item.pos, item.value > 0 ? item.value : 3, dist, 1000.0};
@@ -854,8 +873,8 @@ private:
           if (dist < key_remaining_time * 2 - 5) // 预计能赶到
             return {chest.pos, chest.score, dist, 2000.0};
         }
-        else if (map->value(chest.pos) > 150) // 高价值宝箱
-          return {chest.pos, chest.score, dist, 800.0};
+        else if (map->value(chest.pos) > 0) // 所有宝箱都更积极追求
+          return {chest.pos, chest.score, dist, 1500.0}; // 大幅提高宝箱优先级
       }
     }
     else if (!self.has_key)
