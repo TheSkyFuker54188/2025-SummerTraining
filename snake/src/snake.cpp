@@ -1145,16 +1145,42 @@ public:
   {
     // 分析地图
     map->analyze(state);
+    const auto &head = state.get_self().get_head();
+
+    // 检测头部附近的直接可得食物
+    for (const auto &item : state.items) {
+      if ((item.value > 0 || item.value == GROWTH_BEAN_VALUE) && map->is_safe(item.pos)) {
+        int dist = Utils::manhattan_distance(head, item.pos);
+        // 使用更小的即时反应距离阈值
+        if (dist <= 2) {
+          int dir = Utils::get_direction(head, item.pos);
+          if (dir != -1 && is_direction_safe(dir, state)) {
+            return dir; // 直接吃附近的食物
+          }
+        }
+      }
+    }
 
     // 选择目标并规划路径
     Target target = select_target(state);
-    const auto &head = state.get_self().get_head();
     current_path = path_finder->find_path(head, target.pos, state);
 
-    // 尝试按路径行动
-    if (!current_path.empty())
-    {
-      int next_dir = Utils::get_direction(head, current_path[0]);
+    // 检查路径上是否有食物
+    if (!current_path.empty()) {
+      Point next_pos = current_path[0];
+      int next_dir = Utils::get_direction(head, next_pos);
+      
+      // 检查下一步位置是否有食物
+      for (const auto &item : state.items) {
+        if ((item.value > 0 || item.value == GROWTH_BEAN_VALUE) && 
+            item.pos.x == next_pos.x && item.pos.y == next_pos.y) {
+          // 路径上有食物，确认安全后直接走
+          if (next_dir != -1 && is_direction_safe(next_dir, state))
+            return next_dir;
+        }
+      }
+      
+      // 常规路径行动
       if (next_dir != -1 && is_direction_safe(next_dir, state))
         return next_dir;
     }
