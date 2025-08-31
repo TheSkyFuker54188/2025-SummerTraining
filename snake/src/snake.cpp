@@ -217,8 +217,8 @@ private:
   void mark_shrinking_areas(const GameState &state)
   {
     int current_tick = MAX_TICKS - state.remaining_ticks;
-    int ticks_until_shrink = state.next_shrink_tick - current_tick;
-
+      int ticks_until_shrink = state.next_shrink_tick - current_tick;
+      
     int danger_level = 100; // 默认危险度
     for (int i = 0; i < 4; i++)
       if (ticks_until_shrink <= SHRINK_TIMES[i])
@@ -229,9 +229,9 @@ private:
 
     for (int y = 0; y < MAXM; y++)
       for (int x = 0; x < MAXN; x++)
-        if ((x >= state.current_safe_zone.x_min && x <= state.current_safe_zone.x_max &&
-             y >= state.current_safe_zone.y_min && y <= state.current_safe_zone.y_max) &&
-            (x < state.next_safe_zone.x_min || x > state.next_safe_zone.x_max ||
+          if ((x >= state.current_safe_zone.x_min && x <= state.current_safe_zone.x_max &&
+               y >= state.current_safe_zone.y_min && y <= state.current_safe_zone.y_max) &&
+              (x < state.next_safe_zone.x_min || x > state.next_safe_zone.x_max ||
              y < state.next_safe_zone.y_min || y > state.next_safe_zone.y_max))
           danger_map[y][x] = danger_level;
   }
@@ -266,8 +266,10 @@ private:
     // 后期地图逐渐缩小密集半径
     if (state.remaining_ticks < 100) { // 游戏后期 ———— 较小，减小密集度半径
       density_radius = 3;
-    else if (state.remaining_ticks < 150) // 中后期过渡阶段
+    } 
+    else if (state.remaining_ticks < 150) { // 中后期过渡阶段
       density_radius = 4;
+    }
     // 根据游戏阶段计算密集度重要性
     float game_progress = 1.0f - (float)state.remaining_ticks / MAX_TICKS;// 游戏进程：1.0(初始阶段) -> 0.0(最终阶段)
     // 根据安全区大小衡量地图限制程度
@@ -314,8 +316,8 @@ private:
           continue;
             
         // 只计算需要计算的点（已有食物的点或空白点）
-        if (value_map[y][x] == 0 && map->danger({y, x}) >= DANGER_THRESHOLD)
-          continue;
+        if (value_map[y][x] == 0 && danger_map[y][x] >= DANGER_THRESHOLD)
+        continue;
         
         // 计算该点的密集度
         int density_value = 0;
@@ -333,10 +335,11 @@ private:
         
         if (value_map[y][x] > 0)// 应用密集度到价值图
           value_map[y][x] += (int)(density_value * density_factor);
-        else if (density_value > 0)
+        else if (density_value > 0) {
           // 空地密集度价值，随游戏进程降低
           float empty_space_factor = 0.15f * (1.0f - game_progress * 0.8f); // 从0.15降到0.03
           value_map[y][x] += (int)(density_value * density_factor * empty_space_factor);
+        }
       }
     }
   }
@@ -426,7 +429,7 @@ private:
       int dir = (current.x < goal.x) ? 2 : 0;
       Point next = Utils::get_next_position(current, dir);
       if (!map->is_safe(next))
-        break;
+            break;
       path.push_back(next);
       current = next;
     }
@@ -436,7 +439,7 @@ private:
       int dir = (current.y < goal.y) ? 3 : 1;
       Point next = Utils::get_next_position(current, dir);
       if (!map->is_safe(next))
-        break;
+            break;
       path.push_back(next);
       current = next;
     }
@@ -445,7 +448,7 @@ private:
       path.push_back(goal);
     return path;
   }
-
+  
 public:
   PathFinder(Map *map_ptr) : map(map_ptr) {}
 
@@ -509,9 +512,9 @@ private:
             if (estimated_time_to_reach >= item.lifetime)
             {
               is_reachable = false;
-              break;
-            }
-          }
+          break;
+        }
+      }
         }
         if (!is_reachable)
           continue; // 来不及吃到，忽略这个食物
@@ -568,15 +571,15 @@ private:
     for (const auto &snake : state.snakes)
     { // 敌人身体
       if (snake.id == MYID)
-        continue;
+          continue;
       for (const auto &part : snake.body)
         if (next.x == part.x && next.y == part.y)
-          return false;
+      return false;
     }
-
+    
     for (const auto &item : state.items) // 陷阱 -10
       if (item.value == TRAP_VALUE && next.x == item.pos.x && next.y == item.pos.y)
-        return false;
+      return false;
 
     return true;
   }
@@ -585,7 +588,7 @@ private:
   { //! 护盾使用判断 - 检查是否应该激活护盾  很需要改进，护盾成本太高了
     const auto &self = state.get_self();
     if (self.shield_cd > 0 || self.score < SHIELD_ACTIVATION_COST || self.shield_time > 0)
-      return false;
+          return false;
 
     for (const auto &snake : state.snakes)
     { //! 检查头对头碰撞风险  这是该用护盾的时候吗
@@ -597,12 +600,12 @@ private:
       {
         int my_dir = self.direction, other_dir = snake.direction;
         if ((my_dir == 0 && other_dir == 2) || (my_dir == 2 && other_dir == 0) || (my_dir == 1 && other_dir == 3) || (my_dir == 3 && other_dir == 1))
-          return true;
-      }
-    }
-    return false;
+    return true;
   }
-
+    }
+      return false;
+    }
+    
 public:
   SnakeAI()
   {
@@ -713,6 +716,6 @@ int main()
 
   cout << decision << endl;
   // todo 如果需要写入 Memory，在此处写入
-
+  
   return 0;
 }
