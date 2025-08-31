@@ -59,7 +59,10 @@ constexpr int TRAP_DANGER = 150;        // 陷阱危险度
 
 // 食物价值参数
 constexpr int NORMAL_FOOD_VALUE_MULTIPLIER = 30; // 普通食物价值倍数
-constexpr int GROWTH_BEAN_VALUE_SCORE = 90;      // 增长豆评分价值
+// 增长豆评分价值 - 按游戏阶段递减
+constexpr int GROWTH_BEAN_VALUE_EARLY = 30;      // 早期增长豆价值(等于1分普通食物)
+constexpr int GROWTH_BEAN_VALUE_MID = 20;        // 中期增长豆价值
+constexpr int GROWTH_BEAN_VALUE_LATE = 10;       // 后期增长豆价值
 constexpr int KEY_VALUE_SCORE = 150;             // 钥匙评分价值
 constexpr int CHEST_VALUE_SCORE = 200;           // 宝箱评分价值
 
@@ -165,9 +168,19 @@ public:
 class Map
 { // 多维度地图分析类 - 管理危险度、价值度、中心度三个维度
 private:
-  int danger_map[MAXM][MAXN], value_map[MAXM][MAXN], center_map[MAXM][MAXN];
-  int combined_map[MAXM][MAXN]; // 综合评分地图
-
+  int danger_map[MAXM][MAXN], value_map[MAXM][MAXN], center_map[MAXM][MAXN], combined_map[MAXM][MAXN];
+  
+  // 获取当前游戏阶段的增长豆价值
+  int get_growth_bean_value(const GameState &state) {
+    // 根据游戏阶段动态降低增长豆价值
+    if (state.remaining_ticks > 180)
+      return GROWTH_BEAN_VALUE_EARLY; // 早期
+    else if (state.remaining_ticks > 100)
+      return GROWTH_BEAN_VALUE_MID;   // 中期
+    else
+      return GROWTH_BEAN_VALUE_LATE;  // 后期
+  }
+  
   void analyze_danger(const GameState &state)
   {
     memset(danger_map, 0, sizeof(danger_map));
@@ -442,7 +455,7 @@ private:
           if (estimated_time_to_reach >= item.lifetime)
             continue; // 忽略无法到达的食物
 
-          int base_value = item.value > 0 ? item.value * NORMAL_FOOD_VALUE_MULTIPLIER : GROWTH_BEAN_VALUE_SCORE;
+          int base_value = item.value > 0 ? item.value * NORMAL_FOOD_VALUE_MULTIPLIER : get_growth_bean_value(state);
           food_points.emplace_back(item.pos, base_value);
         }
       }
@@ -494,7 +507,7 @@ private:
         else if (density_value > 0)
         {
           // 空地密集度价值随游戏进程降低
-          float empty_space_factor = 0.15f * (1.0f - game_progress * 0.8f);
+          float empty_space_factor = 0.03f * (1.0f - game_progress * 0.8f);
           value_map[y][x] += (int)(density_value * density_factor * empty_space_factor);
         }
       }
