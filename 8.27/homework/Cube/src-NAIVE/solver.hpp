@@ -11,8 +11,6 @@
 #include <string>
 #include <algorithm>
 #include <iomanip>
-#include <queue>
-#include <functional>
 #include "cube.hpp"
 #include "handle_task.hpp"
 
@@ -41,42 +39,20 @@ namespace cube
         // 到达当前状态的操作序列
         std::vector<MoveAction> moveHistory;
 
-        // 启发式估值 (A*搜索所需)
-        int heuristicValue;
-        
-        // 总代价 f(n) = g(n) + h(n), g(n)是当前深度，h(n)是启发式估值
-        int totalCost;
-
         // 构造函数
         CubeTaskData(Cube &&state, std::vector<MoveAction> &&moves)
-            : cubeState(state), moveHistory(moves), heuristicValue(0), totalCost(0) {}
-        
-        // 带启发式估值的构造函数
-        CubeTaskData(Cube &&state, std::vector<MoveAction> &&moves, int h)
-            : cubeState(state), moveHistory(moves), heuristicValue(h), totalCost(moves.size() + h) {}
+            : cubeState(state), moveHistory(moves) {}
     };
 
     // 定义魔方任务指针类型
     typedef CubeTaskData *PCubeTask;
-    
-    // A*搜索比较函数 - 用于优先队列
-    struct CubeTaskComparator
-    {
-        bool operator()(const PCubeTask &a, const PCubeTask &b) const
-        {
-            // 优先级按总代价排序，代价相同时，优先选择启发值较小的
-            if (a->totalCost == b->totalCost)
-                return a->heuristicValue > b->heuristicValue;
-            return a->totalCost > b->totalCost;
-        }
-    };
 
     /*==============================================
      * 魔方求解器类
      *==============================================*/
     /**
      * 魔方求解器
-     * 支持广度优先搜索和A*搜索算法求解魔方
+     * 使用广度优先搜索求解魔方
      */
     class CubeSolver : public TaskProcessor<PCubeTask>
     {
@@ -84,15 +60,6 @@ namespace cube
         // 内部类型定义
         //=================================
     public:
-        /**
-         * 搜索算法类型枚举
-         */
-        enum class SearchAlgorithm
-        {
-            BFS,    // 广度优先搜索
-            ASTAR   // A*搜索
-        };
-
         /**
          * 求解统计信息结构体
          */
@@ -129,7 +96,6 @@ namespace cube
         bool stopAfterFirstSolution;      // 是否找到一个解就停止
         int currentLayerDepth;            // 当前正在处理的层深度
         bool foundSolutionInCurrentLayer; // 在当前层是否找到解决方案
-        SearchAlgorithm algorithm;        // 当前使用的搜索算法
 
         /* 标准动作集合 */
         MoveAction availableMoves[18]; // 可用的动作数组
@@ -142,7 +108,7 @@ namespace cube
         Statistics stats;         // 统计信息
 
         /* 状态缓存 */
-        std::unordered_map<std::string, int> visitedStatesMap; // 已访问状态的映射表及其深度
+        std::unordered_map<std::string, bool> visitedStatesMap; // 已访问状态的映射表
 
         //=================================
         // 公共接口
@@ -153,11 +119,10 @@ namespace cube
          * @param depth 最大搜索深度
          * @param debug 是否启用调试
          * @param stopOnFirst 是否找到第一个解就停止
-         * @param algo 使用的搜索算法，默认为BFS
          */
-        CubeSolver(int depth, bool debug, bool stopOnFirst, SearchAlgorithm algo = SearchAlgorithm::BFS)
+        CubeSolver(int depth, bool debug, bool stopOnFirst)
             : maxDepthLimit(depth), debugModeEnabled(debug), stopAfterFirstSolution(stopOnFirst),
-              currentLayerDepth(0), foundSolutionInCurrentLayer(false), solutionExists(false), algorithm(algo)
+              currentLayerDepth(0), foundSolutionInCurrentLayer(false), solutionExists(false)
         {
             // 初始化统计信息
             stats = Statistics();
@@ -252,27 +217,15 @@ namespace cube
                 else if ((!foundSolutionInCurrentLayer || !stopAfterFirstSolution) &&
                          taskDepth < maxDepthLimit)
                 {
+
                     // 生成状态唯一标识
                     std::string stateId = task->cubeState.ToString();
 
                     // 检查是否已访问此状态
-                    auto visitedIter = visitedStatesMap.find(stateId);
-                    bool shouldExpand = visitedIter == visitedStatesMap.end();
-                    
-                    // A*算法需要检查是否找到了更优路径到达该状态
-                    if (algorithm == SearchAlgorithm::ASTAR && !shouldExpand) {
-                        // 如果找到了更短的路径到达该状态，则应该重新扩展
-                        if (taskDepth < visitedIter->second) {
-                            shouldExpand = true;
-                            // 更新最短路径记录
-                            visitedIter->second = taskDepth;
-                        }
-                    }
-                    
-                    if (shouldExpand)
+                    if (visitedStatesMap.find(stateId) == visitedStatesMap.end())
                     {
-                        // 标记状态为已访问，并记录深度
-                        visitedStatesMap[stateId] = taskDepth;
+                        // 标记状态为已访问
+                        visitedStatesMap[stateId] = true;
 
                         // 尝试所有可能的操作
                         for (int i = 0; i < moveCount; i++)
@@ -294,27 +247,9 @@ namespace cube
                             {
                                 PrintDebugInfo(task, newState, nextMove);
                             }
-                            
-                            // 根据算法类型处理新状态
-                            if (algorithm == SearchAlgorithm::ASTAR) {
-                                // 计算启发式值
-                                int hValue = CalculateHeuristic(newState);
-                                
-                                // 创建新任务并加入队列
-                                PCubeTask newTask = new CubeTaskData(
-                                    std::move(newState), 
-                                    std::move(nextHistory), 
-                                    hValue
-                                );
-                                
-                                enqueuer.AddTask(newTask);
-                            } else {
-                                // 对于BFS，直接添加新任务
-                                enqueuer.AddTask(new CubeTaskData(
-                                    std::move(newState), 
-                                    std::move(nextHistory)
-                                ));
-                            }
+
+                            // 创建新任务并加入队列
+                            enqueuer.AddTask(new CubeTaskData(std::move(newState), std::move(nextHistory)));
                         }
                     }
                     else
@@ -364,83 +299,6 @@ namespace cube
         {
             return stats;
         }
-        
-        /**
-         * 设置搜索算法类型
-         * @param algo 搜索算法类型
-         */
-        void SetSearchAlgorithm(SearchAlgorithm algo)
-        {
-            algorithm = algo;
-        }
-        
-        /**
-         * 获取当前使用的搜索算法类型
-         * @return 搜索算法类型
-         */
-        SearchAlgorithm GetSearchAlgorithm() const
-        {
-            return algorithm;
-        }
-        
-        /**
-         * 计算魔方状态的启发式值
-         * 这里使用了曼哈顿距离的简化版本：不正确位置的块数量
-         * @param state 魔方状态
-         * @return 启发式估值
-         */
-        int CalculateHeuristic(const Cube &state) const
-        {
-            // 1. 获取魔方状态的字符串表示
-            std::string stateStr = state.ToString();
-            
-            // 2. 计算不在正确位置的块数量
-            int misplacedBlocks = 0;
-            
-            // 遍历每个面
-            std::istringstream iss(stateStr);
-            std::string line;
-            
-            // 每个面的中心颜色
-            char faceColor = ' ';
-            bool isFaceHeader = true;
-            int lineCount = 0;
-            
-            while (std::getline(iss, line)) {
-                if (line.empty()) {
-                    isFaceHeader = true;
-                    lineCount = 0;
-                    continue;
-                }
-                
-                if (isFaceHeader) {
-                    // 这是面的标题行，跳过
-                    isFaceHeader = false;
-                    continue;
-                }
-                
-                // 第二行是面的中间一行，包含中心块
-                if (lineCount == 1) {
-                    // 提取中心块颜色
-                    size_t pos = line.find(' ');
-                    if (pos != std::string::npos && pos + 1 < line.length()) {
-                        faceColor = line[pos + 1];
-                    }
-                }
-                
-                // 检查每个方块是否与中心颜色匹配
-                for (char c : line) {
-                    if (c != ' ' && c != faceColor) {
-                        misplacedBlocks++;
-                    }
-                }
-                
-                lineCount++;
-            }
-            
-            // 3. 权重调整 - 实验表明此倍数效果较好
-            return misplacedBlocks / 2;
-        }
 
         //=================================
         // 私有辅助方法
@@ -464,7 +322,7 @@ namespace cube
                 // 如果不是最后一个元素，添加逗号和空格
                 if (i < actions.size() - 1)
                 {
-                    result << ",";
+                    result << ", ";
                 }
             }
 
@@ -482,12 +340,6 @@ namespace cube
             std::cout << "===== 调试信息 =====" << std::endl;
             std::cout << "当前深度: " << (task->moveHistory.size() + 1) << std::endl;
             std::cout << "已探索节点: " << stats.nodesExplored << std::endl;
-            
-            if (algorithm == SearchAlgorithm::ASTAR) {
-                int h = CalculateHeuristic(newState);
-                std::cout << "启发式估值: " << h << std::endl;
-                std::cout << "总代价: " << (task->moveHistory.size() + 1 + h) << std::endl;
-            }
 
             // 输出当前操作序列
             std::cout << "操作历史: ";
@@ -504,106 +356,6 @@ namespace cube
             // 输出新状态
             std::cout << newState.ToString() << std::endl;
             std::cout << "===================" << std::endl;
-        }
-    };
-
-    /**
-     * A*搜索的任务系统实现
-     * 使用优先队列按启发式值排序
-     */
-    template <typename T>
-    class AStarTaskSystem : public TaskSystem<T>
-    {
-    private:
-        // 优先队列，用于A*搜索
-        typedef std::priority_queue<T, std::vector<T>, CubeTaskComparator> PriorityQueue;
-        
-        /**
-         * 内部队列包装类
-         */
-        class PriorityQueueWrapper : public TaskEnqueuer<T> {
-        private:
-            PriorityQueue& taskQueue;  // 引用任务队列
-            size_t maxSize;            // 记录队列历史最大长度
-            
-        public:
-            /**
-             * 构造函数
-             * @param queue 任务队列引用
-             */
-            explicit PriorityQueueWrapper(PriorityQueue& queue) 
-                : taskQueue(queue), maxSize(0) {}
-            
-            /**
-             * 添加任务到队列
-             * @param task 要添加的任务
-             */
-            void AddTask(T task) override { 
-                taskQueue.push(task); 
-                
-                // 更新最大队列长度
-                if (taskQueue.size() > maxSize) {
-                    maxSize = taskQueue.size();
-                }
-            }
-            
-            /**
-             * 获取当前队列大小
-             */
-            size_t GetQueueSize() const override {
-                return taskQueue.size();
-            }
-            
-            /**
-             * 获取历史最大队列大小
-             */
-            size_t GetMaxQueueSize() const {
-                return maxSize;
-            }
-        };
-
-    public:
-        /**
-         * 构造函数
-         */
-        AStarTaskSystem() = default;
-        
-        /**
-         * 析构函数
-         */
-        ~AStarTaskSystem() override = default;
-        
-        /**
-         * 执行任务处理流程
-         * @param initialTask 初始任务
-         * @param processor 任务处理器
-         * @throws TaskException 如果处理过程中出现错误
-         */
-        void Execute(T& initialTask, TaskProcessor<T>& processor) override {
-            try {
-                // 创建任务队列
-                PriorityQueue taskQueue;
-                
-                // 创建队列包装器
-                PriorityQueueWrapper enqueuer(taskQueue);
-                
-                // 添加初始任务
-                enqueuer.AddTask(initialTask);
-                
-                // 处理队列中的所有任务
-                while (!taskQueue.empty()) {
-                    // 获取队首任务
-                    T currentTask = taskQueue.top();
-                    taskQueue.pop();
-                    
-                    // 处理当前任务
-                    processor.ProcessTask(currentTask, enqueuer);
-                }
-            }
-            catch (const std::exception& e) {
-                // 转换为任务处理异常并重新抛出
-                throw TaskProcessingException(e.what());
-            }
         }
     };
 

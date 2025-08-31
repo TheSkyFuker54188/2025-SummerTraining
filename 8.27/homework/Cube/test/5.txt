@@ -1,0 +1,26 @@
+back:
+p p g
+b b y
+r r r
+up:
+y y y
+y y y
+r g g
+front:
+g p p
+g g w
+b b b
+down:
+w w w
+w w w
+b b p
+right:
+b p w
+b p r
+y g r
+left:
+y r g
+p r g
+p r w
+'3+', '5-', '1-', '0-', '6-'
+'3+', '5-', '2+', '3+'

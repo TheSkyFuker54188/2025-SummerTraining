@@ -2,7 +2,7 @@
  * 魔方求解程序
  *
  * 从标准输入读取魔方状态描述
- * 使用BFS或A*算法寻找最短解法步骤
+ * 使用BFS算法寻找最短解法步骤
  *
  ****************************************************/
 
@@ -35,10 +35,9 @@ public:
  */
 struct ProgramOptions
 {
-    int searchDepth = 0;        // 搜索深度
-    bool debugMode = false;     // 调试模式
-    bool showHelp = false;      // 显示帮助
-    bool useAStarAlgo = false;  // 是否使用A*算法
+    int searchDepth = 0;    // 搜索深度
+    bool debugMode = false; // 调试模式
+    bool showHelp = false;  // 显示帮助
 
     // 解析命令行参数
     static ProgramOptions parseArgs(int argc, char *argv[])
@@ -79,10 +78,6 @@ struct ProgramOptions
             {
                 opts.showHelp = true;
             }
-            else if (arg == "--astar" || arg == "-a")
-            {
-                opts.useAStarAlgo = true;
-            }
         }
 
         return opts;
@@ -97,17 +92,15 @@ void 显示帮助(const char *programName)
     std::cout << "魔方求解程序 - 寻找最短解法路径\n\n"
               << "用法: " << programName << " <搜索深度> [选项]\n\n"
               << "参数:\n"
-              << "  搜索深度  指定搜索的最大深度\n\n"
+              << "  搜索深度  指定BFS搜索的最大深度\n\n"
               << "选项:\n"
               << "  --debug, -d   启用调试模式\n"
-              << "  --astar, -a   使用A*搜索算法（默认使用BFS）\n"
               << "  --help, -h    显示此帮助信息\n\n"
               << "输入格式:\n"
               << "  从标准输入读取魔方状态描述\n"
               << "  使用EOF结束输入\n\n"
               << "示例:\n"
-              << "  " << programName << " 5 < input.txt\n"
-              << "  " << programName << " 5 --astar < input.txt\n\n";
+              << "  " << programName << " 5 < input.txt\n\n";
 }
 
 /**
@@ -168,42 +161,17 @@ int main(int argc, char *argv[])
         std::cout << "|      魔方求解程序启动       |" << std::endl;
         std::cout << "+-----------------------------+" << std::endl;
 
-        // 设置算法类型
-        auto 算法类型 = 选项.useAStarAlgo ? CubeSolver::SearchAlgorithm::ASTAR : CubeSolver::SearchAlgorithm::BFS;
-        
         // 创建求解器和任务系统
-        std::unique_ptr<TaskSystem<PCubeTask>> 任务系统;
-        std::unique_ptr<CubeSolver> 求解器;
-        
-        // 根据算法类型创建对应的任务系统和求解器
-        求解器.reset(new CubeSolver(选项.searchDepth, 选项.debugMode, true, 算法类型));
-        
-        if (选项.useAStarAlgo) {
-            任务系统.reset(new AStarTaskSystem<PCubeTask>());
-            std::cout << "【算法选择】使用A*启发式搜索算法" << std::endl;
-        } else {
-            任务系统.reset(new SingleThreadTaskSystem<PCubeTask>());
-            std::cout << "【算法选择】使用广度优先搜索算法" << std::endl;
-        }
+        std::unique_ptr<TaskSystem<PCubeTask>> 任务系统(new SingleThreadTaskSystem<PCubeTask>());
+        std::unique_ptr<CubeSolver> 求解器(new CubeSolver(选项.searchDepth, 选项.debugMode, true));
 
         // 创建魔方初始状态
         Cube 初始魔方(魔方描述);
 
         // 创建初始任务
-        PCubeTask 初始任务;
-        if (选项.useAStarAlgo) {
-            // 对于A*搜索，需要计算初始状态的启发式值
-            int 启发式值 = 求解器->CalculateHeuristic(初始魔方);
-            初始任务 = new CubeTaskData(
-                std::move(初始魔方),
-                std::vector<MoveAction>(),
-                启发式值);
-            std::cout << "【初始状态】启发式估值: " << 启发式值 << std::endl;
-        } else {
-            初始任务 = new CubeTaskData(
-                std::move(初始魔方),
-                std::vector<MoveAction>());
-        }
+        PCubeTask 初始任务 = new CubeTaskData(
+            std::move(初始魔方),
+            std::vector<MoveAction>());
 
         // 开始求解并计时
         std::cout << "【开始求解】最大深度: " << 选项.searchDepth << std::endl;
@@ -216,13 +184,6 @@ int main(int argc, char *argv[])
 
         // 输出求解结果
         std::cout << "【求解完成】耗时: " << 耗时 << " 毫秒" << std::endl;
-        
-        // 输出统计信息
-        const auto& 统计信息 = 求解器->GetStatistics();
-        std::cout << "【统计信息】探索节点: " << 统计信息.nodesExplored 
-                  << ", 生成状态: " << 统计信息.statesGenerated
-                  << ", 跳过重复: " << 统计信息.duplicatesSkipped << std::endl;
-        
         std::cout << "+-----------------------------+" << std::endl;
 
         if (求解器->HasSolution())
