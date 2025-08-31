@@ -481,11 +481,6 @@ private:
     for (const auto &[pos, base_value] : food_points)
     {
       value_map[pos.y][pos.x] = base_value;
-
-      // 即将过期的食物价值提高
-      for (const auto &item : state.items)
-        if (item.pos.y == pos.y && item.pos.x == pos.x && item.lifetime < 15)
-          value_map[pos.y][pos.x] = (int)(base_value * 1.5f);
     }
 
     // 计算食物密集度贡献
