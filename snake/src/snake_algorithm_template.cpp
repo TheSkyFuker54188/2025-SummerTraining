@@ -311,7 +311,16 @@ unordered_set<Direction> illegalMove(const GameState &state)
         }
         else
         {
-            if (mp[y][x] == -4) // 墙
+            // 添加安全区检查
+            if (x < state.current_safe_zone.x_min || x > state.current_safe_zone.x_max || 
+                y < state.current_safe_zone.y_min || y > state.current_safe_zone.y_max)
+            {
+                // 只有当护盾时间足够时才允许离开安全区
+                if (self.shield_time <= 1) {
+                    illegals.insert(dir);
+                }
+            }
+            else if (mp[y][x] == -4) // 墙
             {
                 illegals.insert(dir);
             }
@@ -347,7 +356,16 @@ unordered_set<Direction> illegalMove(const GameState &state)
             }
             else
             {
-                if (mp[y][x] == -4) // 墙
+                // 安全区检查 - 即使在紧急情况下也不允许离开安全区
+                if (x < state.current_safe_zone.x_min || x > state.current_safe_zone.x_max || 
+                    y < state.current_safe_zone.y_min || y > state.current_safe_zone.y_max)
+                {
+                    // 只有当护盾时间足够时才允许离开安全区
+                    if (self.shield_time <= 1) {
+                        illegals.insert(dir);
+                    }
+                }
+                else if (mp[y][x] == -4) // 墙
                 {
                     illegals.insert(dir);
                 }
@@ -393,10 +411,65 @@ namespace Strategy
         return make_pair(tot, minimized);
     }
 
+    // 安全区中心倾向评分函数
+    double safeZoneCenterScore(const GameState &state, int y, int x)
+    {
+        // 计算相对于当前安全区中心的位置
+        int center_x = (state.current_safe_zone.x_min + state.current_safe_zone.x_max) / 2;
+        int center_y = (state.current_safe_zone.y_min + state.current_safe_zone.y_max) / 2;
+        
+        // 当安全区即将收缩时，使用下一个安全区的中心
+        int ticks_to_shrink = state.next_shrink_tick - (MAX_TICKS - state.remaining_ticks);
+        if (ticks_to_shrink >= 0 && ticks_to_shrink <= 25) {
+            center_x = (state.next_safe_zone.x_min + state.next_safe_zone.x_max) / 2;
+            center_y = (state.next_safe_zone.y_min + state.next_safe_zone.y_max) / 2;
+        }
+        
+        // 计算到中心的距离，并根据游戏阶段调整中心倾向性
+        double distance = abs(y - center_y) + abs(x - center_x);
+        double center_factor = 0;
+        
+        // 游戏后期更重视中心位置
+        if (state.remaining_ticks < 100) {
+            center_factor = 5.0;
+        } else if (state.remaining_ticks < 180) {
+            center_factor = 3.0;
+        } else {
+            center_factor = 1.0;
+        }
+        
+        return -distance * center_factor;
+    }
+
     // BFS搜索评估函数
     double bfs(int sy, int sx, int fy, int fx, const GameState &state)
     {
         double score = 0;
+        
+        // 安全区收缩风险评估
+        int current_tick = MAX_TICKS - state.remaining_ticks;
+        int ticks_to_shrink = state.next_shrink_tick - current_tick;
+        
+        // 如果即将收缩（小于20个tick）
+        if (ticks_to_shrink >= 0 && ticks_to_shrink <= 20)
+        {
+            // 检查位置是否在下一个安全区内
+            if (sx < state.next_safe_zone.x_min || sx > state.next_safe_zone.x_max ||
+                sy < state.next_safe_zone.y_min || sy > state.next_safe_zone.y_max)
+            {
+                // 安全区外位置价值大幅降低，危险度随收缩时间临近增加
+                if (ticks_to_shrink <= 5) {
+                    // 极度危险，几乎立即放弃
+                    score -= 5000;
+                } else if (ticks_to_shrink <= 10) {
+                    // 很危险，强烈避免
+                    score -= 3000; 
+                } else {
+                    // 有风险，尽量避免
+                    score -= 1000;
+                }
+            }
+        }
         
         // 特殊检查：如果在关口位置，小心进入
         bool flag = false;
@@ -704,7 +777,7 @@ namespace Strategy
         return 0; // 安全拐角
     }
 
-    // 综合评估函数 - 结合BFS和拐角评估
+    // 综合评估函数 - 结合BFS、拐角评估和安全区考虑
     double eval(const GameState &state, int y, int x, int fy, int fx)
     {
         int test = cornerEval(y, x, fy, fx);
@@ -720,7 +793,15 @@ namespace Strategy
                 mp[y][x] = -9; // 标记陷阱拐角
             }
         }
-        return bfs(y, x, fy, fx, state); // 传递state参数
+        
+        // 安全区中心评估
+        double safe_zone_score = safeZoneCenterScore(state, y, x);
+        
+        // BFS评估
+        double bfs_score = bfs(y, x, fy, fx, state);
+        
+        // 整合评分
+        return bfs_score + safe_zone_score;
     }
 }
 

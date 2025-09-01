@@ -8,61 +8,6 @@
 
 分析了两个代码版本后，我设计了一个分步骤逐步引入功能的方案，确保不做大的结构调整。
 
-## 2. 高级食物价值计算
-
-将 `snake.cpp`中的食物价值计算引入BFS搜索评估函数：
-
-```cpp
-// 修改497-505行的食物价值计算
-if (mp[y][x] > 0) { // 普通食物
-  // 识别高分值食物（蛇尸体通常是高分值食物>=5）
-  if (mp[y][x] >= 5) {
-    // 增加高分值食物的权重
-    num = mp[y][x] * 40; // 显著提高高分食物优先级
-  } else {
-    num = mp[y][x] * 30; // 普通食物基础权重
-  }
-} else if (mp[y][x] == -1) { // 增长豆
-  // 根据游戏阶段动态调整增长豆价值
-  if (state.remaining_ticks > 180)
-    num = 30; // 早期价值高
-  else if (state.remaining_ticks > 100)
-    num = 20; // 中期价值中等
-  else
-    num = 10; // 后期价值低
-}
-```
-
-## 3. 竞争因素增强
-
-改进现有的竞争因素评估，整合 `snake.cpp`中的竞争系数计算：
-
-```cpp
-// 强化545-563行的竞争因素
-float competition_factor = 1.0f;
-const auto &self_head = state.get_self().get_head();
-int self_distance = abs(self_head.y - y) + abs(self_head.x - x);
-
-// 检查其他蛇与目标的距离关系
-for (const auto &snake : state.snakes) {
-  if (snake.id != MYID && snake.id != -1) {
-    int dist = abs(snake.get_head().y - y) + abs(snake.get_head().x - x);
-  
-    // 如果敌方蛇更近，竞争系数降低
-    if (dist < self_distance) {
-      competition_factor *= 0.7f; // 减少30%价值
-    }
-    // 如果敌方蛇距离相近，轻微降低价值
-    else if (dist <= self_distance + 2) {
-      competition_factor *= 0.9f; // 减少10%价值
-    }
-  }
-}
-
-// 应用竞争系数
-weight *= competition_factor;
-```
-
 ## 4. 宝箱和钥匙的特殊处理
 
 在评估函数中添加对宝箱和钥匙的特殊处理：
@@ -99,7 +44,7 @@ double eval(const GameState &state, int y, int x, int fy, int fx) {
             break;
           }
         }
-    
+  
         // 根据钥匙剩余时间计算价值
         if (key_remaining_time < 10) // 钥匙即将过期
           return 1000;
@@ -182,7 +127,7 @@ bool shouldUseShield(const GameState &state) {
           (my_dir == 2 && other_dir == 0) ||
           (my_dir == 1 && other_dir == 3) ||
           (my_dir == 3 && other_dir == 1);
-      
+    
       if (head_on_collision && distance <= 6)
         return true; // 即将发生头对头碰撞
     }
