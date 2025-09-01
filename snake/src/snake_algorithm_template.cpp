@@ -425,34 +425,31 @@ namespace Strategy
         return make_pair(tot, minimized);
     }
 
-    // 安全区中心倾向评分函数
+    // 安全区边界评分函数（不再有中心倾向）
     double safeZoneCenterScore(const GameState &state, int y, int x)
     {
-        // 计算相对于当前安全区中心的位置
-        int center_x = (state.current_safe_zone.x_min + state.current_safe_zone.x_max) / 2;
-        int center_y = (state.current_safe_zone.y_min + state.current_safe_zone.y_max) / 2;
+        // 不再计算到中心的距离和惩罚
+        // 而是检查位置是否在安全区内，并根据到边界的距离给予适当评分
         
-        // 当安全区即将收缩时，使用下一个安全区的中心
+        // 确定要考虑的安全区
+        SafeZoneBounds zone = state.current_safe_zone;
+        
+        // 当安全区即将收缩时，使用下一个安全区
         int ticks_to_shrink = state.next_shrink_tick - (MAX_TICKS - state.remaining_ticks);
         if (ticks_to_shrink >= 0 && ticks_to_shrink <= 25) {
-            center_x = (state.next_safe_zone.x_min + state.next_safe_zone.x_max) / 2;
-            center_y = (state.next_safe_zone.y_min + state.next_safe_zone.y_max) / 2;
+            zone = state.next_safe_zone;
         }
         
-        // 计算到中心的距离，并根据游戏阶段调整中心倾向性
-        double distance = abs(y - center_y) + abs(x - center_x);
-        double center_factor = 0;
+        // 计算到安全区边界的最小距离
+        int dist_to_border = min({
+            x - zone.x_min,
+            zone.x_max - x,
+            y - zone.y_min,
+            zone.y_max - y
+        });
         
-        // 游戏后期更重视中心位置
-        if (state.remaining_ticks < 100) {
-            center_factor = 5.0;
-        } else if (state.remaining_ticks < 180) {
-            center_factor = 3.0;
-        } else {
-            center_factor = 1.0;
-        }
-        
-        return -distance * center_factor;
+        // 如果距离边界太近(<=3格)，给予轻微惩罚，否则返回0（不偏好任何区域）
+        return (dist_to_border <= 3) ? -5.0 * (3 - dist_to_border) : 0;
     }
 
     // BFS搜索评估函数
@@ -546,11 +543,7 @@ namespace Strategy
         }
         else
         {
-            if (start > timeRest && timeRest >= end)
-            {
-                const double r = maxNum * (timeRest - start) * (timeRest - start);
-                score -= (abs(sy - 14.5) + abs(sx - 19.5)) * r / ((start - end) * (start - end));
-            }
+            // 删除中心倾向代码
         }
 
         // BFS搜索价值区域
@@ -866,7 +859,7 @@ namespace Strategy
         return 0; // 安全拐角
     }
 
-    // 综合评估函数 - 结合BFS、拐角评估和安全区考虑
+    // 综合评估函数 - 结合BFS、拐角评估和安全区边界考虑
     double eval(const GameState &state, int y, int x, int fy, int fx)
     {
         int test = cornerEval(y, x, fy, fx);
@@ -883,13 +876,13 @@ namespace Strategy
             }
         }
         
-        // 安全区中心评估
+        // 安全区评分 - 现在只对靠近边界的位置有轻微惩罚
         double safe_zone_score = safeZoneCenterScore(state, y, x);
         
         // BFS评估
         double bfs_score = bfs(y, x, fy, fx, state);
         
-        // 整合评分
+        // 整合评分，安全区评分不再包含中心偏好
         return bfs_score + safe_zone_score;
     }
 }
