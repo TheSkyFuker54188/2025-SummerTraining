@@ -174,6 +174,62 @@ struct GameState {
 // 游戏地图状态: mp用于物品, mp2用于蛇的位置
 int mp[MAXM][MAXN], mp2[MAXM][MAXN];
 
+// 简化的目标锁定机制（暂未启用）
+static Point current_target = {-1, -1};
+static int target_value = 0;
+static int target_lock_time = 0;
+
+// 目标锁定函数（保留接口，但暂不实际启用）
+void lock_on_target(const GameState &state) {
+    // 删除未使用的变量
+    // const auto &head = state.get_self().get_head();
+    
+    // 更新锁定状态
+    if (target_lock_time > 0) {
+        target_lock_time--;
+    }
+    
+    // 检查当前目标是否仍然存在
+    bool target_exists = false;
+    if (current_target.y != -1 && current_target.x != -1) {
+        for (const auto &item : state.items) {
+            // 使用近似匹配检测目标是否仍然存在
+            if (abs(item.pos.y - current_target.y) <= 1 && 
+                abs(item.pos.x - current_target.x) <= 1 &&
+                item.value >= target_value * 0.8) { // 允许价值有小幅下降
+                
+                current_target = item.pos; // 更新为精确位置
+                target_exists = true;
+                break;
+            }
+        }
+    }
+    
+    // 如果目标不再存在或锁定时间结束，重置锁定状态
+    if (!target_exists && target_lock_time <= 0) {
+        current_target = {-1, -1};
+        target_value = 0;
+    }
+    
+    // 如果没有锁定目标，尝试锁定新目标
+    // 注意：暂不启用目标锁定功能，因此此处不执行实际锁定
+    /*
+    if (current_target.y == -1 || current_target.x == -1) {
+        for (const auto &item : state.items) {
+            if (item.value >= 10) { // 极高价值尸体
+                int dist = abs(head.y - item.pos.y) + abs(head.x - item.pos.x);
+                if (dist <= 5) { // 更严格的距离要求
+                    current_target = item.pos;
+                    target_value = item.value;
+                    target_lock_time = min(dist + 2, 7); // 更短的锁定时间
+                    break;
+                }
+            }
+        }
+    }
+    */
+}
+
 void read_game_state(GameState &s) {
   cin >> s.remaining_ticks;
 
@@ -646,15 +702,43 @@ namespace Strategy
             // 评估物品价值
             else if (mp[y][x] > 0) // 普通食物
             {
-                // 识别高分值食物（蛇尸体通常是高分值食物>=5）
+                // 动态评估尸体价值 - 基于距离
+                const auto &snake_head = state.get_self().get_head();
+                int head_dist = abs(snake_head.y - y) + abs(snake_head.x - x);
+                
                 if (mp[y][x] >= 10) {
-                    // 极高价值的尸体，极大提高优先级
-                    num = mp[y][x] * 60 + 50; // 更加强调高分尸体价值
+                    // 极高价值的尸体
+                    if (head_dist <= 6) {
+                        // 非常近的高价值尸体，价值翻倍
+                        num = mp[y][x] * 200 + 200;
+                    } else if (head_dist <= 10) {
+                        // 较近的高价值尸体
+                        num = mp[y][x] * 120 + 120;
+                    } else {
+                        // 远距离高价值尸体，标准价值
+                        num = mp[y][x] * 80 + 80;
+                    }
                 } else if (mp[y][x] >= 5) {
-                    // 高价值的尸体，显著提高优先级
-                    num = mp[y][x] * 50 + 25; // 显著提高高分食物优先级
-                } else {
-                    num = mp[y][x] * 30; // 普通食物基础权重
+                    // 中等价值的尸体
+                    if (head_dist <= 4) {
+                        // 非常近的中等尸体，价值提高
+                        num = mp[y][x] * 100 + 80;
+                    } else {
+                        // 标准价值
+                        num = mp[y][x] * 70 + 40;
+                    }
+                } else if (mp[y][x] > 0) {
+                    // 普通食物也增加距离差异化处理
+                    if (head_dist <= 3) {
+                        // 非常近的普通食物，提高价值
+                        num = mp[y][x] * 45; // 提高50%
+                    } else if (head_dist <= 5) {
+                        // 较近的普通食物，略微提高价值
+                        num = mp[y][x] * 35; // 提高约17%
+                    } else {
+                        // 远距离普通食物，标准价值
+                        num = mp[y][x] * 30;
+                    }
                 }
             }
             else if (mp[y][x] == -1) // 增长豆
@@ -667,6 +751,19 @@ namespace Strategy
                 else
                     num = 10; // 后期价值低
             }
+            
+            // 根据游戏阶段动态调整普通食物价值
+            if (mp[y][x] > 0 && mp[y][x] < 5) { // 只处理普通食物
+                // 早期更看重普通食物(避免过分追求增长豆)
+                if (state.remaining_ticks > 180) {
+                    num *= 1.2; // 提高20%
+                }
+                // 后期提高所有食物价值(加速得分)
+                else if (state.remaining_ticks < 60) {
+                    num *= 1.3; // 提高30%
+                }
+            }
+            
             else if (mp[y][x] == -2) // 陷阱
             {
                 num = -0.5;
@@ -717,7 +814,8 @@ namespace Strategy
             
             // 计算位置权重
             double weight;
-            auto [tot, mini] = count(state, y, x);
+            //! 目前只存储竞争系数
+            auto [tot, _] = count(state, y, x);  // 使用_表示未使用的变量
             
             // 根据层级分配权重
             switch (layer)
@@ -768,19 +866,38 @@ namespace Strategy
                         
                         // 如果敌方蛇更近，竞争系数降低
                         if (dist < self_distance) {
-                            // 对于高价值尸体，即使竞争也要争取
-                            if (mp[y][x] >= 8) {
-                                competition_factor *= 0.85f; // 对高分尸体，只减少15%价值
+                            // 对高价值尸体的竞争调整
+                            if (mp[y][x] >= 10) {
+                                // 极高价值尸体
+                                if (self_distance <= 6) {
+                                    // 近距离内的极高价值尸体，更强烈争夺
+                                    competition_factor *= 0.95f; // 仅轻微降低价值
+                                } else {
+                                    competition_factor *= 0.85f; // 适度降低价值
+                                }
+                            } else if (mp[y][x] >= 5) {
+                                // 高价值尸体
+                                if (self_distance <= 4) {
+                                    // 非常近的高价值尸体，值得争夺
+                                    competition_factor *= 0.90f; // 轻微降低价值
+                                } else {
+                                    competition_factor *= 0.80f; // 适度降低价值
+                                }
                             } else {
-                                competition_factor *= 0.7f; // 普通食物减少30%价值
+                                competition_factor *= 0.8f; // 从0.7提高到0.8，减轻普通食物竞争惩罚
                             }
                         }
                         // 如果敌方蛇距离相近，轻微降低价值
                         else if (dist <= self_distance + 2) {
                             if (mp[y][x] >= 8) {
-                                competition_factor *= 0.95f; // 对高分尸体，几乎不降低价值
+                                // 对高分尸体，竞争性调整
+                                if (self_distance <= 6) {
+                                    competition_factor *= 0.98f; // 几乎不降低价值
+                                } else {
+                                    competition_factor *= 0.95f; // 轻微降低价值
+                                }
                             } else {
-                                competition_factor *= 0.9f; // 普通食物减少10%价值
+                                competition_factor *= 0.9f; // 普通食物降低价值
                             }
                         }
                     }
@@ -926,17 +1043,24 @@ namespace Strategy
 
 int judge(const GameState &state)
 {
+    // 更新目标锁定状态（保留接口，暂不启用实际锁定功能）
+    lock_on_target(state);
+    
     // 即时反应 - 处理近距离高价值目标
     const auto &head = state.get_self().get_head();
-    const int immediate_range = 3;
     
-    // 高分食物检测（优先级最高）
+    // 距离分层常量定义
+    const int VERY_CLOSE_RANGE = 4;  // 增加普通食物即时反应范围
+    const int CLOSE_RANGE = 6;       // 近距离
+    const int EXTENDED_RANGE = 10;   // 扩展检测范围
+    
+    // 第一优先级：极近距离高价值尸体 (<=3格)
     for (const auto &item : state.items)
     {
         if (item.value >= 5)  // 高价值食物（蛇尸体）
         {
             int dist = abs(head.y - item.pos.y) + abs(head.x - item.pos.x);
-            if (dist <= immediate_range * 2)  // 高价值食物有更大的检测范围
+            if (dist <= VERY_CLOSE_RANGE)  // 极近距离最高优先级
             {
                 // 首先检查是否会因安全区收缩而消失
                 int current_tick = MAX_TICKS - state.remaining_ticks;
@@ -949,7 +1073,125 @@ int judge(const GameState &state)
                     }
                 }
                 
-                // 然后检查是否能够及时到达
+                // 检查是否能够及时到达
+                if (!Utils::canReachFoodInTime(head.y, head.x, item.pos.y, item.pos.x, item.lifetime)) {
+                    continue; // 跳过无法及时到达的食物
+                }
+                
+                // 确定移动方向
+                Direction move_dir;
+                if (head.x > item.pos.x) move_dir = Direction::LEFT;
+                else if (head.x < item.pos.x) move_dir = Direction::RIGHT;
+                else if (head.y > item.pos.y) move_dir = Direction::UP;
+                else move_dir = Direction::DOWN;
+                
+                // 检查移动安全性
+                unordered_set<Direction> illegals = illegalMove(state);
+                if (illegals.count(move_dir) == 0) {
+                    return Utils::dir2num(move_dir);
+                }
+            }
+        }
+    }
+    
+    // 特殊情况：如果有极高价值尸体但距离远，而附近有普通食物，权衡选择
+    for (const auto &item : state.items) {
+        // 只考虑普通食物
+        if (item.value > 0 && item.value < 5) {
+            int dist = abs(head.y - item.pos.y) + abs(head.x - item.pos.x);
+            if (dist <= 2) { // 非常近的食物
+                // 检查是否会因安全区收缩而消失
+                int current_tick = MAX_TICKS - state.remaining_ticks;
+                int ticks_to_shrink = state.next_shrink_tick - current_tick;
+                
+                if (ticks_to_shrink >= 0 && ticks_to_shrink <= 20) {
+                    if (item.pos.x < state.next_safe_zone.x_min || item.pos.x > state.next_safe_zone.x_max ||
+                        item.pos.y < state.next_safe_zone.y_min || item.pos.y > state.next_safe_zone.y_max) {
+                        continue; // 食物将消失，跳过
+                    }
+                }
+                
+                // 检查是否能够及时到达
+                if (!Utils::canReachFoodInTime(head.y, head.x, item.pos.y, item.pos.x, item.lifetime)) {
+                    continue; // 跳过无法及时到达的食物
+                }
+                
+                // 如果可达且安全，直接获取这个近距离食物
+                Direction move_dir;
+                if (head.x > item.pos.x) move_dir = Direction::LEFT;
+                else if (head.x < item.pos.x) move_dir = Direction::RIGHT;
+                else if (head.y > item.pos.y) move_dir = Direction::UP;
+                else move_dir = Direction::DOWN;
+                
+                // 检查移动安全性
+                unordered_set<Direction> illegals = illegalMove(state);
+                if (illegals.count(move_dir) == 0) {
+                    return Utils::dir2num(move_dir);
+                }
+            }
+        }
+    }
+    
+    // 第二优先级：近距离更高价值尸体 (<=6格，价值>=8)
+    for (const auto &item : state.items)
+    {
+        if (item.value >= 8)  // 更高价值食物
+        {
+            int dist = abs(head.y - item.pos.y) + abs(head.x - item.pos.x);
+            if (dist <= CLOSE_RANGE)  // 近距离
+            {
+                // 首先检查是否会因安全区收缩而消失
+                int current_tick = MAX_TICKS - state.remaining_ticks;
+                int ticks_to_shrink = state.next_shrink_tick - current_tick;
+                
+                if (ticks_to_shrink >= 0 && ticks_to_shrink <= 20) {
+                    if (item.pos.x < state.next_safe_zone.x_min || item.pos.x > state.next_safe_zone.x_max ||
+                        item.pos.y < state.next_safe_zone.y_min || item.pos.y > state.next_safe_zone.y_max) {
+                        continue; // 食物将消失，跳过
+                    }
+                }
+                
+                // 检查是否能够及时到达
+                if (!Utils::canReachFoodInTime(head.y, head.x, item.pos.y, item.pos.x, item.lifetime)) {
+                    continue; // 跳过无法及时到达的食物
+                }
+                
+                // 确定移动方向
+                Direction move_dir;
+                if (head.x > item.pos.x) move_dir = Direction::LEFT;
+                else if (head.x < item.pos.x) move_dir = Direction::RIGHT;
+                else if (head.y > item.pos.y) move_dir = Direction::UP;
+                else move_dir = Direction::DOWN;
+                
+                // 检查移动安全性
+                unordered_set<Direction> illegals = illegalMove(state);
+                if (illegals.count(move_dir) == 0) {
+                    return Utils::dir2num(move_dir);
+                }
+            }
+        }
+    }
+    
+    // 第三优先级：扩展距离高价值尸体 (<=10格，价值>=10)
+    for (const auto &item : state.items)
+    {
+        if (item.value >= 10)  // 极高价值食物
+        {
+            int dist = abs(head.y - item.pos.y) + abs(head.x - item.pos.x);
+            if (dist <= EXTENDED_RANGE)  // 扩展距离
+            {
+                // 首先检查是否会因安全区收缩而消失
+                int current_tick = MAX_TICKS - state.remaining_ticks;
+                int ticks_to_shrink = state.next_shrink_tick - current_tick;
+                
+                if (ticks_to_shrink >= 0 && ticks_to_shrink <= 20) {
+                    if (item.pos.x < state.next_safe_zone.x_min || item.pos.x > state.next_safe_zone.x_max ||
+                        item.pos.y < state.next_safe_zone.y_min || item.pos.y > state.next_safe_zone.y_max) {
+                        continue; // 食物将消失，跳过
+                    }
+                }
+                
+                // 检查是否能够及时到达
                 if (!Utils::canReachFoodInTime(head.y, head.x, item.pos.y, item.pos.x, item.lifetime)) {
                     continue; // 跳过无法及时到达的食物
                 }
@@ -976,7 +1218,7 @@ int judge(const GameState &state)
         if (item.value == -2) continue; // 跳过陷阱
         
         int dist = abs(head.y - item.pos.y) + abs(head.x - item.pos.x);
-        if (dist <= immediate_range)
+        if (dist <= VERY_CLOSE_RANGE)  // 修复：使用VERY_CLOSE_RANGE替代immediate_range
         {
             // 首先检查是否会因安全区收缩而消失
             int current_tick = MAX_TICKS - state.remaining_ticks;

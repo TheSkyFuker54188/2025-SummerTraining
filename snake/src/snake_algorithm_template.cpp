@@ -341,6 +341,9 @@ unordered_set<Direction> illegalMove(const GameState &state)
     unordered_set<Direction> illegals;
     const Snake &self = state.get_self();
     
+    // 添加紧急模式检测
+    bool emergency_mode = false;
+    
     // 确定反方向（不能往回走）
     auto addReverse = [&]()
     {
@@ -390,6 +393,14 @@ unordered_set<Direction> illegalMove(const GameState &state)
             {
                 illegals.insert(dir);
             }
+            // 添加陷阱检查
+            else if (mp[y][x] == -2) // 陷阱
+            {
+                // 将陷阱添加到非法移动中，除非是紧急情况
+                if (!emergency_mode) {
+                    illegals.insert(dir);
+                }
+            }
             else if (mp2[y][x] == -5 || mp2[y][x] == -6 || mp2[y][x] == -7)
             {
                 // 如果护盾时间快要结束，并且开不了护盾了
@@ -402,15 +413,16 @@ unordered_set<Direction> illegalMove(const GameState &state)
         }
     }
 
-    // 如果四种方向都不行，试图放宽限制，可以开护盾
+    // 如果四种方向都不行，进入紧急模式，重新评估
     if (illegals.size() == 4)
     {
+        emergency_mode = true;
         illegals.clear();
 
         // 自己方向的反方向不能走
         addReverse();
 
-        // 放宽条件：墙绝对不能走，但在有护盾或可以开护盾的情况下可以穿过蛇
+        // 放宽条件：墙绝对不能走，但在有护盾或可以开护盾的情况下可以穿过蛇，紧急情况下可以穿过陷阱
         for (auto dir : validDirections)
         {
             const Point &head = self.get_head();
@@ -444,6 +456,7 @@ unordered_set<Direction> illegalMove(const GameState &state)
                         illegals.insert(dir);
                     }
                 }
+                // 紧急情况下可以考虑穿过陷阱，不将其视为非法
             }
         }
     }
@@ -453,6 +466,9 @@ unordered_set<Direction> illegalMove(const GameState &state)
 
 namespace Strategy
 {
+    // 前向声明evaluateTrap函数，确保在bfs函数之前可见
+    double evaluateTrap(const GameState &state, int trap_y, int trap_x);
+
     // 计算其他蛇离某个目标的距离，如果太近就放弃这个地方
     pair<int, int> count(const GameState &state, int y, int x)
     {
@@ -599,24 +615,46 @@ namespace Strategy
             }
         }
         
-        // 处理陷阱的情况
-        if (mp[sy][sx] == -2 && !flag)
-        {
-            score = -1000;
-        }
-        
         // 游戏后期向中心靠拢的策略
         const double start = 150, end = 25, maxNum2 = 30;
         const int timeRest = state.remaining_ticks;
         
-        if (mp[sy][sx] == -2 && flag && mp2[sy][sx] != -5 && mp2[sy][sx] != -6 && mp2[sy][sx] != -7)
+        // 处理陷阱的情况
+        if (mp[sy][sx] == -2 && !flag)
         {
-            score = -26;
+            // 使用专门的陷阱评估函数
+            score = evaluateTrap(state, sy, sx);
+        }
+        else if (mp[sy][sx] == -2 && flag && mp2[sy][sx] != -5 && mp2[sy][sx] != -6 && mp2[sy][sx] != -7)
+        {
+            // 拐角陷阱，但非紧急情况
+            score = -500; // 非紧急情况下尽量避免
+            
+            // 检查是否处于紧急情况（四周都是障碍）
+            bool is_emergency = true;
+            const auto &head = state.get_self().get_head();
+            for (auto dir : validDirections) {
+                const auto [next_y, next_x] = Utils::nextPos({head.y, head.x}, dir);
+                if (Utils::boundCheck(next_y, next_x)) {
+                    if (mp[next_y][next_x] != -4 && mp2[next_y][next_x] != -5 &&
+                        next_x >= state.current_safe_zone.x_min && next_x <= state.current_safe_zone.x_max && 
+                        next_y >= state.current_safe_zone.y_min && next_y <= state.current_safe_zone.y_max) {
+                        is_emergency = false;
+                        break;
+                    }
+                }
+            }
+            
+            if (is_emergency) {
+                score = -100; // 紧急情况下接受陷阱
+            }
+            
             if (start > timeRest && timeRest >= end)
             {
                 const double r = maxNum2 * (timeRest - start) * (timeRest - start);
                 score += r / ((start - end) * (start - end));
             }
+            
             return score;
         }
         else
@@ -1008,9 +1046,51 @@ namespace Strategy
         }
         if (mp[qy][qx] == -2)
         {
-            return 1; // 有陷阱的拐角
+            return -50; // 修改为负值，表示有陷阱的拐角不好
         }
         return 0; // 安全拐角
+    }
+    
+    // 新增NAIVE陷阱评估函数
+    double evaluateTrap(const GameState &state, int trap_y, int trap_x) {
+        // 显式标记参数为已使用，避免警告
+        (void)trap_y;
+        (void)trap_x;
+        
+        const auto &self = state.get_self();
+        
+        // 基础分：默认陷阱非常危险
+        double score = -1000;
+        
+        // 如果蛇当前分数很高，减轻陷阱惩罚
+        if (self.score > 50) {
+            score = -800; // 减轻惩罚
+        } else if (self.score > 100) {
+            score = -600; // 更进一步减轻惩罚
+        }
+        
+        // 检测是否处于紧急情况（四周都是障碍）
+        bool surrounded = true;
+        const auto &head = self.get_head();
+        for (auto dir : validDirections) {
+            const auto [next_y, next_x] = Utils::nextPos({head.y, head.x}, dir);
+            if (Utils::boundCheck(next_y, next_x)) {
+                // 检查是否为障碍（墙、蛇身，但不包括陷阱）
+                if (mp[next_y][next_x] != -4 && mp2[next_y][next_x] != -5 && 
+                    next_x >= state.current_safe_zone.x_min && next_x <= state.current_safe_zone.x_max && 
+                    next_y >= state.current_safe_zone.y_min && next_y <= state.current_safe_zone.y_max) {
+                    surrounded = false;
+                    break;
+                }
+            }
+        }
+        
+        // 如果蛇即将死亡(四周都是障碍)，接受陷阱
+        if (surrounded) {
+            score = -100; // 显著减轻惩罚
+        }
+        
+        return score;
     }
 
     // 综合评估函数 - 结合BFS、拐角评估和安全区边界考虑
@@ -1024,7 +1104,7 @@ namespace Strategy
             {
                 return -50000; // 危险拐角，强烈避免
             }
-            if (test == 1)
+            if (test == -50)
             {
                 mp[y][x] = -9; // 标记陷阱拐角
             }
