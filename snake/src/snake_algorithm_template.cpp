@@ -420,32 +420,7 @@ namespace Strategy
         return make_pair(tot, minimized);
     }
 
-    // 食物密度评估函数 - 计算指定区域内食物密集程度
-    double calculateFoodDensity(const GameState &state, int center_y, int center_x, int radius = 5) 
-    {
-        double total_value = 0;
-        int count = 0;
-      
-        // 计算指定区域内所有食物的总价值
-        for (const auto &item : state.items) {
-            // 检查食物是否在指定半径内
-            if (abs(item.pos.y - center_y) <= radius && abs(item.pos.x - center_x) <= radius) {
-                // 增加食物价值计数
-                if (item.value > 0) { // 普通食物
-                    total_value += item.value;
-                    count++;
-                } else if (item.value == -1) { // 增长豆
-                    // 根据游戏阶段确定增长豆价值
-                    int growth_value = (state.remaining_ticks > 176) ? 3 : 2;
-                    total_value += growth_value;
-                    count++;
-                }
-            }
-        }
-      
-        // 返回密度分数，避免除以零
-        return (count > 0) ? (total_value / count) * count : 0;
-    }
+
 
     // 安全区边界评分函数（不再有中心倾向）
     double safeZoneCenterScore(const GameState &state, int y, int x)
@@ -565,22 +540,7 @@ namespace Strategy
         }
         else
         {
-            // 在第二次收缩前考虑食物密度
-            if (state.remaining_ticks > 76) { // 1-160刻
-                // 计算当前位置区域的食物密度
-                double density_score = calculateFoodDensity(state, sy, sx, 5);
-                
-                // 根据游戏进程调整密度权重
-                double density_weight = 0.0;
-                if (state.remaining_ticks > 176) { // 早期阶段
-                    density_weight = 0.8; // 早期更看重食物密集区
-                } else { // 中期第一部分
-                    density_weight = 0.5; // 中期适当关注
-                }
-                
-                // 将密度分数加入总评分
-                score += density_score * density_weight;
-            }
+
         }
 
         // BFS搜索价值区域
@@ -649,10 +609,10 @@ namespace Strategy
                 // 识别高分值食物（蛇尸体通常是高分值食物>=5）
                 if (mp[y][x] >= 10) {
                     // 极高价值的尸体，极大提高优先级
-                    num = mp[y][x] * 60 + 50; // 更加强调高分尸体价值
+                    num = mp[y][x] * 100 + 100; // 提高到原来的近2倍
                 } else if (mp[y][x] >= 5) {
                     // 高价值的尸体，显著提高优先级
-                    num = mp[y][x] * 50 + 25; // 显著提高高分食物优先级
+                    num = mp[y][x] * 80 + 50; // 提高到原来的1.6倍
                 } else {
                     num = mp[y][x] * 30; // 普通食物基础权重
                 }
@@ -768,19 +728,23 @@ namespace Strategy
                         
                         // 如果敌方蛇更近，竞争系数降低
                         if (dist < self_distance) {
-                            // 对于高价值尸体，即使竞争也要争取
+                            // 降低竞争因素对尸体的影响
                             if (mp[y][x] >= 8) {
-                                competition_factor *= 0.85f; // 对高分尸体，只减少15%价值
+                                competition_factor *= 0.95f; // 只减少5%价值
+                            } else if (mp[y][x] >= 5) {
+                                competition_factor *= 0.90f; // 减少10%价值
                             } else {
-                                competition_factor *= 0.7f; // 普通食物减少30%价值
+                                competition_factor *= 0.7f; // 普通食物不变
                             }
                         }
                         // 如果敌方蛇距离相近，轻微降低价值
                         else if (dist <= self_distance + 2) {
                             if (mp[y][x] >= 8) {
-                                competition_factor *= 0.95f; // 对高分尸体，几乎不降低价值
+                                competition_factor *= 0.98f; // 几乎不降低价值
+                            } else if (mp[y][x] >= 5) {
+                                competition_factor *= 0.95f; // 轻微降低价值
                             } else {
-                                competition_factor *= 0.9f; // 普通食物减少10%价值
+                                competition_factor *= 0.9f; // 普通食物不变
                             }
                         }
                     }
@@ -929,6 +893,7 @@ int judge(const GameState &state)
     // 即时反应 - 处理近距离高价值目标
     const auto &head = state.get_self().get_head();
     const int immediate_range = 3;
+    const int corpse_detection_range = 8; // 尸体检测范围扩大到8格
     
     // 高分食物检测（优先级最高）
     for (const auto &item : state.items)
@@ -936,7 +901,7 @@ int judge(const GameState &state)
         if (item.value >= 5)  // 高价值食物（蛇尸体）
         {
             int dist = abs(head.y - item.pos.y) + abs(head.x - item.pos.x);
-            if (dist <= immediate_range * 2)  // 高价值食物有更大的检测范围
+            if (dist <= corpse_detection_range)  // 使用更大的检测范围(从6扩大到8)
             {
                 // 首先检查是否会因安全区收缩而消失
                 int current_tick = MAX_TICKS - state.remaining_ticks;
