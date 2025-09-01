@@ -73,6 +73,20 @@ namespace Utils
         }
     }
 
+    // 判断食物是否可以及时到达 - 重载版本1：直接使用坐标和生命周期
+    bool canReachFoodInTime(int head_y, int head_x, int food_y, int food_x, int lifetime) 
+    {
+        // 计算曼哈顿距离
+        int dist = abs(head_y - food_y) + abs(head_x - food_x);
+        
+        // 考虑转弯限制，估计实际所需时间
+        // 由于转弯限制，实际路径通常会比曼哈顿距离长
+        int estimated_ticks = dist + dist/5; // 粗略估计：每5步可能需要额外1步用于转弯
+        
+        // 简单判断：如果预计到达时间超过食物剩余生命周期，则忽略该食物
+        return estimated_ticks < lifetime;
+    }
+
     // 随机地从一个 vector 中抽取一个元素
     template <typename T>
     T randomChoice(const vector<T> &vec)
@@ -567,8 +581,26 @@ namespace Strategy
             const auto [y, x] = Utils::str2idx(currentState);
             double num = mp[y][x] * 1.0;
             
+            // 找到对应的物品以检查生命周期
+            bool can_reach = true;
+            for (const auto &item : state.items) {
+                if (item.pos.y == y && item.pos.x == x) {
+                    // 检查是否能够及时到达
+                    const auto &head = state.get_self().get_head();
+                    if (!Utils::canReachFoodInTime(head.y, head.x, item.pos.y, item.pos.x, item.lifetime)) {
+                        // 如果不能及时到达，将该食物价值设为0
+                        can_reach = false;
+                        break;
+                    }
+                }
+            }
+            
+            // 如果食物无法及时到达，则价值为0
+            if (mp[y][x] != 0 && mp[y][x] != -2 && !can_reach) {
+                num = 0;
+            }
             // 评估物品价值
-            if (mp[y][x] > 0) // 普通食物
+            else if (mp[y][x] > 0) // 普通食物
             {
                 // 识别高分值食物（蛇尸体通常是高分值食物>=5）
                 if (mp[y][x] >= 10) {
@@ -808,6 +840,67 @@ namespace Strategy
 // 主决策函数 - 移植自EXAMPLE2.cpp的judge函数
 int judge(const GameState &state)
 {
+    // 即时反应 - 处理近距离高价值目标
+    const auto &head = state.get_self().get_head();
+    const int immediate_range = 3;
+    
+    // 高分食物检测（优先级最高）
+    for (const auto &item : state.items)
+    {
+        if (item.value >= 5)  // 高价值食物（蛇尸体）
+        {
+            int dist = abs(head.y - item.pos.y) + abs(head.x - item.pos.x);
+            if (dist <= immediate_range * 2)  // 高价值食物有更大的检测范围
+            {
+                // 首先检查是否能够及时到达
+                if (!Utils::canReachFoodInTime(head.y, head.x, item.pos.y, item.pos.x, item.lifetime)) {
+                    continue; // 跳过无法及时到达的食物
+                }
+                
+                // 确定移动方向
+                Direction move_dir;
+                if (head.x > item.pos.x) move_dir = Direction::LEFT;
+                else if (head.x < item.pos.x) move_dir = Direction::RIGHT;
+                else if (head.y > item.pos.y) move_dir = Direction::UP;
+                else move_dir = Direction::DOWN;
+                
+                // 检查移动安全性
+                unordered_set<Direction> illegals = illegalMove(state);
+                if (illegals.count(move_dir) == 0) {
+                    return Utils::dir2num(move_dir);
+                }
+            }
+        }
+    }
+    
+    // 普通近距离食物检测
+    for (const auto &item : state.items)
+    {
+        if (item.value == -2) continue; // 跳过陷阱
+        
+        int dist = abs(head.y - item.pos.y) + abs(head.x - item.pos.x);
+        if (dist <= immediate_range)
+        {
+            // 首先检查是否能够及时到达
+            if (!Utils::canReachFoodInTime(head.y, head.x, item.pos.y, item.pos.x, item.lifetime)) {
+                continue; // 跳过无法及时到达的食物
+            }
+            
+            // 确定移动方向
+            Direction move_dir;
+            if (head.x > item.pos.x) move_dir = Direction::LEFT;
+            else if (head.x < item.pos.x) move_dir = Direction::RIGHT;
+            else if (head.y > item.pos.y) move_dir = Direction::UP;
+            else move_dir = Direction::DOWN;
+            
+            // 检查移动安全性
+            unordered_set<Direction> illegals = illegalMove(state);
+            if (illegals.count(move_dir) == 0) {
+                return Utils::dir2num(move_dir);
+            }
+        }
+    }
+    
     // 确定合法移动
     unordered_set<Direction> illegals = illegalMove(state);
     vector<Direction> legalMoves;
