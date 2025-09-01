@@ -17,11 +17,9 @@ constexpr int MAXM = 30;
 constexpr int MAX_TICKS = 256;
 constexpr int MYID = 2023202295; // 此处替换为你的学号！
 
-// ===== 从EXAMPLE2.cpp移植的常量 =====
 constexpr int EmptyIdx = -1;     // 空位置标识
 constexpr int SHIELD_COMMAND = 4; // 护盾指令值
 
-// ===== 从EXAMPLE2.cpp移植的辅助枚举和工具函数 =====
 enum class Direction
 {
     LEFT,
@@ -32,7 +30,6 @@ enum class Direction
 
 const vector<Direction> validDirections{Direction::UP, Direction::DOWN, Direction::LEFT, Direction::RIGHT};
 
-// ===== 移植Utils命名空间的工具函数 =====
 namespace Utils
 {
     // 检查是否越界
@@ -283,7 +280,6 @@ void read_game_state(GameState &s) {
       s.final_safe_zone.y_max;
 }
 
-// 从EXAMPLE2.cpp移植的函数 - 确定非法移动
 unordered_set<Direction> illegalMove(const GameState &state)
 {
     unordered_set<Direction> illegals;
@@ -399,7 +395,6 @@ unordered_set<Direction> illegalMove(const GameState &state)
     return illegals;
 }
 
-// 从EXAMPLE2.cpp移植的策略评估函数
 namespace Strategy
 {
     // 计算其他蛇离某个目标的距离，如果太近就放弃这个地方
@@ -423,6 +418,33 @@ namespace Strategy
             }
         }
         return make_pair(tot, minimized);
+    }
+
+    // 食物密度评估函数 - 计算指定区域内食物密集程度
+    double calculateFoodDensity(const GameState &state, int center_y, int center_x, int radius = 5) 
+    {
+        double total_value = 0;
+        int count = 0;
+      
+        // 计算指定区域内所有食物的总价值
+        for (const auto &item : state.items) {
+            // 检查食物是否在指定半径内
+            if (abs(item.pos.y - center_y) <= radius && abs(item.pos.x - center_x) <= radius) {
+                // 增加食物价值计数
+                if (item.value > 0) { // 普通食物
+                    total_value += item.value;
+                    count++;
+                } else if (item.value == -1) { // 增长豆
+                    // 根据游戏阶段确定增长豆价值
+                    int growth_value = (state.remaining_ticks > 176) ? 3 : 2;
+                    total_value += growth_value;
+                    count++;
+                }
+            }
+        }
+      
+        // 返回密度分数，避免除以零
+        return (count > 0) ? (total_value / count) * count : 0;
     }
 
     // 安全区边界评分函数（不再有中心倾向）
@@ -528,7 +550,7 @@ namespace Strategy
         }
         
         // 游戏后期向中心靠拢的策略
-        const double start = 150, end = 25, maxNum = 5, maxNum2 = 30;
+        const double start = 150, end = 25, maxNum2 = 30;
         const int timeRest = state.remaining_ticks;
         
         if (mp[sy][sx] == -2 && flag && mp2[sy][sx] != -5 && mp2[sy][sx] != -6 && mp2[sy][sx] != -7)
@@ -543,7 +565,22 @@ namespace Strategy
         }
         else
         {
-            // 删除中心倾向代码
+            // 在第二次收缩前考虑食物密度
+            if (state.remaining_ticks > 76) { // 1-160刻
+                // 计算当前位置区域的食物密度
+                double density_score = calculateFoodDensity(state, sy, sx, 5);
+                
+                // 根据游戏进程调整密度权重
+                double density_weight = 0.0;
+                if (state.remaining_ticks > 176) { // 早期阶段
+                    density_weight = 0.8; // 早期更看重食物密集区
+                } else { // 中期第一部分
+                    density_weight = 0.5; // 中期适当关注
+                }
+                
+                // 将密度分数加入总评分
+                score += density_score * density_weight;
+            }
         }
 
         // BFS搜索价值区域
@@ -579,11 +616,11 @@ namespace Strategy
             for (const auto &item : state.items) {
                 if (item.pos.y == y && item.pos.x == x) {
                     // 1. 检查食物是否会因安全区收缩而消失
-                    int current_tick = MAX_TICKS - state.remaining_ticks;
-                    int ticks_to_shrink = state.next_shrink_tick - current_tick;
+                    int food_current_tick = MAX_TICKS - state.remaining_ticks;
+                    int food_ticks_to_shrink = state.next_shrink_tick - food_current_tick;
                     
                     // 如果即将收缩(<=20个tick)且食物在下一个安全区外，预计会消失
-                    if (ticks_to_shrink >= 0 && ticks_to_shrink <= 20) {
+                    if (food_ticks_to_shrink >= 0 && food_ticks_to_shrink <= 20) {
                         if (x < state.next_safe_zone.x_min || x > state.next_safe_zone.x_max ||
                             y < state.next_safe_zone.y_min || y > state.next_safe_zone.y_max) {
                             // 食物将消失，将其价值设为0
@@ -593,8 +630,8 @@ namespace Strategy
                     }
                     
                     // 2. 然后再检查是否能及时到达
-                    const auto &head = state.get_self().get_head();
-                    if (!Utils::canReachFoodInTime(head.y, head.x, item.pos.y, item.pos.x, item.lifetime)) {
+                                         const auto &snake_head = state.get_self().get_head();
+                    if (!Utils::canReachFoodInTime(snake_head.y, snake_head.x, item.pos.y, item.pos.x, item.lifetime)) {
                         // 如果不能及时到达，将该食物价值设为0
                         can_reach = false;
                         break;
@@ -639,25 +676,25 @@ namespace Strategy
             double safeZoneFactor = 1.0;
             
             // 安全区因子计算
-            int current_tick = MAX_TICKS - state.remaining_ticks;
-            int ticks_to_shrink = state.next_shrink_tick - current_tick;
+            int zone_current_tick = MAX_TICKS - state.remaining_ticks;
+            int zone_ticks_to_shrink = state.next_shrink_tick - zone_current_tick;
             
             // 分析当前所处安全区阶段
-            if (current_tick < 80) { 
+            if (zone_current_tick < 80) { 
                 // 早期阶段 - 标准评估
                 safeZoneFactor = 1.0;
-            } else if (current_tick < 160) {
+            } else if (zone_current_tick < 160) {
                 // 第一次收缩阶段
-                if (ticks_to_shrink >= 0 && ticks_to_shrink <= 25) {
+                if (zone_ticks_to_shrink >= 0 && zone_ticks_to_shrink <= 25) {
                     // 即将收缩时，提高下个安全区内食物价值
                     if (x >= state.next_safe_zone.x_min && x <= state.next_safe_zone.x_max &&
                         y >= state.next_safe_zone.y_min && y <= state.next_safe_zone.y_max) {
                         safeZoneFactor = 1.3; // 提升30%价值
                     }
                 }
-            } else if (current_tick < 220) {
+            } else if (zone_current_tick < 220) {
                 // 第二次收缩阶段
-                if (ticks_to_shrink >= 0 && ticks_to_shrink <= 25) {
+                if (zone_ticks_to_shrink >= 0 && zone_ticks_to_shrink <= 25) {
                     // 更强烈提升下个安全区内食物价值
                     if (x >= state.next_safe_zone.x_min && x <= state.next_safe_zone.x_max &&
                         y >= state.next_safe_zone.y_min && y <= state.next_safe_zone.y_max) {
@@ -666,7 +703,7 @@ namespace Strategy
                 }
             } else {
                 // 最终收缩阶段
-                if (ticks_to_shrink >= 0 && ticks_to_shrink <= 25) {
+                if (zone_ticks_to_shrink >= 0 && zone_ticks_to_shrink <= 25) {
                     // 最终安全区内食物价值极高
                     if (x >= state.next_safe_zone.x_min && x <= state.next_safe_zone.x_max &&
                         y >= state.next_safe_zone.y_min && y <= state.next_safe_zone.y_max) {
@@ -887,7 +924,6 @@ namespace Strategy
     }
 }
 
-// 主决策函数 - 移植自EXAMPLE2.cpp的judge函数
 int judge(const GameState &state)
 {
     // 即时反应 - 处理近距离高价值目标
@@ -997,7 +1033,7 @@ int judge(const GameState &state)
     
     for (auto dir : legalMoves)
     {
-        const auto &head = state.get_self().get_head();
+        // 重用前面已经声明的head变量
         const auto [y, x] = Utils::nextPos({head.y, head.x}, dir);
         
         double eval = Strategy::eval(state, y, x, head.y, head.x);
@@ -1037,7 +1073,6 @@ int main() {
   GameState current_state;
   read_game_state(current_state);
 
-  // 使用移植的judge函数进行决策
   int decision = judge(current_state);
 
   // 输出决策
