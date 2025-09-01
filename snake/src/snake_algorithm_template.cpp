@@ -495,11 +495,27 @@ namespace Strategy
             double num = mp[y][x] * 1.0;
             
             // 评估物品价值
-            if (mp[y][x] == -1) // 增长豆
+            if (mp[y][x] > 0) // 普通食物
             {
-                num = 1.8;
+                // 识别高分值食物（蛇尸体通常是高分值食物>=5）
+                if (mp[y][x] >= 5) {
+                    // 增加高分值食物的权重
+                    num = mp[y][x] * 40; // 显著提高高分食物优先级
+                } else {
+                    num = mp[y][x] * 30; // 普通食物基础权重
+                }
             }
-            if (mp[y][x] == -2) // 陷阱
+            else if (mp[y][x] == -1) // 增长豆
+            {
+                // 根据游戏阶段动态调整增长豆价值
+                if (state.remaining_ticks > 180)
+                    num = 30; // 早期价值高
+                else if (state.remaining_ticks > 100)
+                    num = 20; // 中期价值中等
+                else
+                    num = 10; // 后期价值低
+            }
+            else if (mp[y][x] == -2) // 陷阱
             {
                 num = -0.5;
             }
