@@ -561,22 +561,29 @@ namespace Strategy
             // 考虑竞争因素调整权重
             if (mp[y][x] != -2) // 不是陷阱
             {
-                if (tot >= 4)
-                {
-                    weight = 0.5; // 太多竞争者
+                // 强化竞争因素评估
+                float competition_factor = 1.0f;
+                const auto &self_head = state.get_self().get_head();
+                int self_distance = abs(self_head.y - y) + abs(self_head.x - x);
+                
+                // 检查其他蛇与目标的距离关系
+                for (const auto &snake : state.snakes) {
+                    if (snake.id != MYID && snake.id != -1) {
+                        int dist = abs(snake.get_head().y - y) + abs(snake.get_head().x - x);
+                        
+                        // 如果敌方蛇更近，竞争系数降低
+                        if (dist < self_distance) {
+                            competition_factor *= 0.7f; // 减少30%价值
+                        }
+                        // 如果敌方蛇距离相近，轻微降低价值
+                        else if (dist <= self_distance + 2) {
+                            competition_factor *= 0.9f; // 减少10%价值
+                        }
+                    }
                 }
-                if (tot >= 3 && mini <= 3)
-                {
-                    weight = 0.5; // 多竞争者且很近
-                }
-                if (tot >= 2 && mini <= 2)
-                {
-                    weight = 0.5; 
-                }
-                if (tot >= 1 && mini <= 1)
-                {
-                    weight = 0.5; // 有竞争者且很近
-                }
+                
+                // 应用竞争系数
+                weight *= competition_factor;
             }
             
             // 计算总得分
