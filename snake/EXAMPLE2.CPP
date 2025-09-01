@@ -73,20 +73,6 @@ namespace Utils
         }
     }
 
-    // 判断食物是否可以及时到达 - 重载版本1：直接使用坐标和生命周期
-    bool canReachFoodInTime(int head_y, int head_x, int food_y, int food_x, int lifetime) 
-    {
-        // 计算曼哈顿距离
-        int dist = abs(head_y - food_y) + abs(head_x - food_x);
-        
-        // 考虑转弯限制，估计实际所需时间
-        // 由于转弯限制，实际路径通常会比曼哈顿距离长
-        int estimated_ticks = dist + dist/5; // 粗略估计：每5步可能需要额外1步用于转弯
-        
-        // 简单判断：如果预计到达时间超过食物剩余生命周期，则忽略该食物
-        return estimated_ticks < lifetime;
-    }
-
     // 随机地从一个 vector 中抽取一个元素
     template <typename T>
     T randomChoice(const vector<T> &vec)
@@ -325,16 +311,7 @@ unordered_set<Direction> illegalMove(const GameState &state)
         }
         else
         {
-            // 添加安全区检查
-            if (x < state.current_safe_zone.x_min || x > state.current_safe_zone.x_max || 
-                y < state.current_safe_zone.y_min || y > state.current_safe_zone.y_max)
-            {
-                // 只有当护盾时间足够时才允许离开安全区
-                if (self.shield_time <= 1) {
-                    illegals.insert(dir);
-                }
-            }
-            else if (mp[y][x] == -4) // 墙
+            if (mp[y][x] == -4) // 墙
             {
                 illegals.insert(dir);
             }
@@ -370,16 +347,7 @@ unordered_set<Direction> illegalMove(const GameState &state)
             }
             else
             {
-                // 安全区检查 - 即使在紧急情况下也不允许离开安全区
-                if (x < state.current_safe_zone.x_min || x > state.current_safe_zone.x_max || 
-                    y < state.current_safe_zone.y_min || y > state.current_safe_zone.y_max)
-                {
-                    // 只有当护盾时间足够时才允许离开安全区
-                    if (self.shield_time <= 1) {
-                        illegals.insert(dir);
-                    }
-                }
-                else if (mp[y][x] == -4) // 墙
+                if (mp[y][x] == -4) // 墙
                 {
                     illegals.insert(dir);
                 }
@@ -425,65 +393,10 @@ namespace Strategy
         return make_pair(tot, minimized);
     }
 
-    // 安全区中心倾向评分函数
-    double safeZoneCenterScore(const GameState &state, int y, int x)
-    {
-        // 计算相对于当前安全区中心的位置
-        int center_x = (state.current_safe_zone.x_min + state.current_safe_zone.x_max) / 2;
-        int center_y = (state.current_safe_zone.y_min + state.current_safe_zone.y_max) / 2;
-        
-        // 当安全区即将收缩时，使用下一个安全区的中心
-        int ticks_to_shrink = state.next_shrink_tick - (MAX_TICKS - state.remaining_ticks);
-        if (ticks_to_shrink >= 0 && ticks_to_shrink <= 25) {
-            center_x = (state.next_safe_zone.x_min + state.next_safe_zone.x_max) / 2;
-            center_y = (state.next_safe_zone.y_min + state.next_safe_zone.y_max) / 2;
-        }
-        
-        // 计算到中心的距离，并根据游戏阶段调整中心倾向性
-        double distance = abs(y - center_y) + abs(x - center_x);
-        double center_factor = 0;
-        
-        // 游戏后期更重视中心位置
-        if (state.remaining_ticks < 100) {
-            center_factor = 5.0;
-        } else if (state.remaining_ticks < 180) {
-            center_factor = 3.0;
-        } else {
-            center_factor = 1.0;
-        }
-        
-        return -distance * center_factor;
-    }
-
     // BFS搜索评估函数
     double bfs(int sy, int sx, int fy, int fx, const GameState &state)
     {
         double score = 0;
-        
-        // 安全区收缩风险评估
-        int current_tick = MAX_TICKS - state.remaining_ticks;
-        int ticks_to_shrink = state.next_shrink_tick - current_tick;
-        
-        // 如果即将收缩（小于20个tick）
-        if (ticks_to_shrink >= 0 && ticks_to_shrink <= 20)
-        {
-            // 检查位置是否在下一个安全区内
-            if (sx < state.next_safe_zone.x_min || sx > state.next_safe_zone.x_max ||
-                sy < state.next_safe_zone.y_min || sy > state.next_safe_zone.y_max)
-            {
-                // 安全区外位置价值大幅降低，危险度随收缩时间临近增加
-                if (ticks_to_shrink <= 5) {
-                    // 极度危险，几乎立即放弃
-                    score -= 5000;
-                } else if (ticks_to_shrink <= 10) {
-                    // 很危险，强烈避免
-                    score -= 3000; 
-                } else {
-                    // 有风险，尽量避免
-                    score -= 1000;
-                }
-            }
-        }
         
         // 特殊检查：如果在关口位置，小心进入
         bool flag = false;
@@ -581,109 +494,15 @@ namespace Strategy
             const auto [y, x] = Utils::str2idx(currentState);
             double num = mp[y][x] * 1.0;
             
-            // 找到对应的物品以检查生命周期
-            bool can_reach = true;
-            for (const auto &item : state.items) {
-                if (item.pos.y == y && item.pos.x == x) {
-                    // 1. 检查食物是否会因安全区收缩而消失
-                    int current_tick = MAX_TICKS - state.remaining_ticks;
-                    int ticks_to_shrink = state.next_shrink_tick - current_tick;
-                    
-                    // 如果即将收缩(<=20个tick)且食物在下一个安全区外，预计会消失
-                    if (ticks_to_shrink >= 0 && ticks_to_shrink <= 20) {
-                        if (x < state.next_safe_zone.x_min || x > state.next_safe_zone.x_max ||
-                            y < state.next_safe_zone.y_min || y > state.next_safe_zone.y_max) {
-                            // 食物将消失，将其价值设为0
-                            can_reach = false;
-                            break;
-                        }
-                    }
-                    
-                    // 2. 然后再检查是否能及时到达
-                    const auto &head = state.get_self().get_head();
-                    if (!Utils::canReachFoodInTime(head.y, head.x, item.pos.y, item.pos.x, item.lifetime)) {
-                        // 如果不能及时到达，将该食物价值设为0
-                        can_reach = false;
-                        break;
-                    }
-                }
-            }
-            
-            // 如果食物无法及时到达，则价值为0
-            if (mp[y][x] != 0 && mp[y][x] != -2 && !can_reach) {
-                num = 0;
-            }
             // 评估物品价值
-            else if (mp[y][x] > 0) // 普通食物
+            if (mp[y][x] == -1) // 增长豆
             {
-                // 识别高分值食物（蛇尸体通常是高分值食物>=5）
-                if (mp[y][x] >= 10) {
-                    // 极高价值的尸体，极大提高优先级
-                    num = mp[y][x] * 60 + 50; // 更加强调高分尸体价值
-                } else if (mp[y][x] >= 5) {
-                    // 高价值的尸体，显著提高优先级
-                    num = mp[y][x] * 50 + 25; // 显著提高高分食物优先级
-                } else {
-                    num = mp[y][x] * 30; // 普通食物基础权重
-                }
+                num = 1.8;
             }
-            else if (mp[y][x] == -1) // 增长豆
-            {
-                // 根据游戏阶段动态调整增长豆价值
-                if (state.remaining_ticks > 180)
-                    num = 30; // 早期价值高
-                else if (state.remaining_ticks > 100)
-                    num = 20; // 中期价值中等
-                else
-                    num = 10; // 后期价值低
-            }
-            else if (mp[y][x] == -2) // 陷阱
+            if (mp[y][x] == -2) // 陷阱
             {
                 num = -0.5;
             }
-            
-            // 基于安全区阶段的食物价值动态调整
-            double safeZoneFactor = 1.0;
-            
-            // 安全区因子计算
-            int current_tick = MAX_TICKS - state.remaining_ticks;
-            int ticks_to_shrink = state.next_shrink_tick - current_tick;
-            
-            // 分析当前所处安全区阶段
-            if (current_tick < 80) { 
-                // 早期阶段 - 标准评估
-                safeZoneFactor = 1.0;
-            } else if (current_tick < 160) {
-                // 第一次收缩阶段
-                if (ticks_to_shrink >= 0 && ticks_to_shrink <= 25) {
-                    // 即将收缩时，提高下个安全区内食物价值
-                    if (x >= state.next_safe_zone.x_min && x <= state.next_safe_zone.x_max &&
-                        y >= state.next_safe_zone.y_min && y <= state.next_safe_zone.y_max) {
-                        safeZoneFactor = 1.3; // 提升30%价值
-                    }
-                }
-            } else if (current_tick < 220) {
-                // 第二次收缩阶段
-                if (ticks_to_shrink >= 0 && ticks_to_shrink <= 25) {
-                    // 更强烈提升下个安全区内食物价值
-                    if (x >= state.next_safe_zone.x_min && x <= state.next_safe_zone.x_max &&
-                        y >= state.next_safe_zone.y_min && y <= state.next_safe_zone.y_max) {
-                        safeZoneFactor = 1.5; // 提升50%价值
-                    }
-                }
-            } else {
-                // 最终收缩阶段
-                if (ticks_to_shrink >= 0 && ticks_to_shrink <= 25) {
-                    // 最终安全区内食物价值极高
-                    if (x >= state.next_safe_zone.x_min && x <= state.next_safe_zone.x_max &&
-                        y >= state.next_safe_zone.y_min && y <= state.next_safe_zone.y_max) {
-                        safeZoneFactor = 2.0; // 提升100%价值
-                    }
-                }
-            }
-            
-            // 应用安全区因子
-            num *= safeZoneFactor;
             
             // 计算位置权重
             double weight;
@@ -726,38 +545,22 @@ namespace Strategy
             // 考虑竞争因素调整权重
             if (mp[y][x] != -2) // 不是陷阱
             {
-                // 强化竞争因素评估
-                float competition_factor = 1.0f;
-                const auto &self_head = state.get_self().get_head();
-                int self_distance = abs(self_head.y - y) + abs(self_head.x - x);
-                
-                // 检查其他蛇与目标的距离关系
-                for (const auto &snake : state.snakes) {
-                    if (snake.id != MYID && snake.id != -1) {
-                        int dist = abs(snake.get_head().y - y) + abs(snake.get_head().x - x);
-                        
-                        // 如果敌方蛇更近，竞争系数降低
-                        if (dist < self_distance) {
-                            // 对于高价值尸体，即使竞争也要争取
-                            if (mp[y][x] >= 8) {
-                                competition_factor *= 0.85f; // 对高分尸体，只减少15%价值
-                            } else {
-                                competition_factor *= 0.7f; // 普通食物减少30%价值
-                            }
-                        }
-                        // 如果敌方蛇距离相近，轻微降低价值
-                        else if (dist <= self_distance + 2) {
-                            if (mp[y][x] >= 8) {
-                                competition_factor *= 0.95f; // 对高分尸体，几乎不降低价值
-                            } else {
-                                competition_factor *= 0.9f; // 普通食物减少10%价值
-                            }
-                        }
-                    }
+                if (tot >= 4)
+                {
+                    weight = 0.5; // 太多竞争者
                 }
-                
-                // 应用竞争系数
-                weight *= competition_factor;
+                if (tot >= 3 && mini <= 3)
+                {
+                    weight = 0.5; // 多竞争者且很近
+                }
+                if (tot >= 2 && mini <= 2)
+                {
+                    weight = 0.5; 
+                }
+                if (tot >= 1 && mini <= 1)
+                {
+                    weight = 0.5; // 有竞争者且很近
+                }
             }
             
             // 计算总得分
@@ -866,7 +669,7 @@ namespace Strategy
         return 0; // 安全拐角
     }
 
-    // 综合评估函数 - 结合BFS、拐角评估和安全区考虑
+    // 综合评估函数 - 结合BFS和拐角评估
     double eval(const GameState &state, int y, int x, int fy, int fx)
     {
         int test = cornerEval(y, x, fy, fx);
@@ -882,104 +685,13 @@ namespace Strategy
                 mp[y][x] = -9; // 标记陷阱拐角
             }
         }
-        
-        // 安全区中心评估
-        double safe_zone_score = safeZoneCenterScore(state, y, x);
-        
-        // BFS评估
-        double bfs_score = bfs(y, x, fy, fx, state);
-        
-        // 整合评分
-        return bfs_score + safe_zone_score;
+        return bfs(y, x, fy, fx, state); // 传递state参数
     }
 }
 
 // 主决策函数 - 移植自EXAMPLE2.cpp的judge函数
 int judge(const GameState &state)
 {
-    // 即时反应 - 处理近距离高价值目标
-    const auto &head = state.get_self().get_head();
-    const int immediate_range = 3;
-    
-    // 高分食物检测（优先级最高）
-    for (const auto &item : state.items)
-    {
-        if (item.value >= 5)  // 高价值食物（蛇尸体）
-        {
-            int dist = abs(head.y - item.pos.y) + abs(head.x - item.pos.x);
-            if (dist <= immediate_range * 2)  // 高价值食物有更大的检测范围
-            {
-                // 首先检查是否会因安全区收缩而消失
-                int current_tick = MAX_TICKS - state.remaining_ticks;
-                int ticks_to_shrink = state.next_shrink_tick - current_tick;
-                
-                if (ticks_to_shrink >= 0 && ticks_to_shrink <= 20) {
-                    if (item.pos.x < state.next_safe_zone.x_min || item.pos.x > state.next_safe_zone.x_max ||
-                        item.pos.y < state.next_safe_zone.y_min || item.pos.y > state.next_safe_zone.y_max) {
-                        continue; // 食物将消失，跳过
-                    }
-                }
-                
-                // 然后检查是否能够及时到达
-                if (!Utils::canReachFoodInTime(head.y, head.x, item.pos.y, item.pos.x, item.lifetime)) {
-                    continue; // 跳过无法及时到达的食物
-                }
-                
-                // 确定移动方向
-                Direction move_dir;
-                if (head.x > item.pos.x) move_dir = Direction::LEFT;
-                else if (head.x < item.pos.x) move_dir = Direction::RIGHT;
-                else if (head.y > item.pos.y) move_dir = Direction::UP;
-                else move_dir = Direction::DOWN;
-                
-                // 检查移动安全性
-                unordered_set<Direction> illegals = illegalMove(state);
-                if (illegals.count(move_dir) == 0) {
-                    return Utils::dir2num(move_dir);
-                }
-            }
-        }
-    }
-    
-    // 普通近距离食物检测
-    for (const auto &item : state.items)
-    {
-        if (item.value == -2) continue; // 跳过陷阱
-        
-        int dist = abs(head.y - item.pos.y) + abs(head.x - item.pos.x);
-        if (dist <= immediate_range)
-        {
-            // 首先检查是否会因安全区收缩而消失
-            int current_tick = MAX_TICKS - state.remaining_ticks;
-            int ticks_to_shrink = state.next_shrink_tick - current_tick;
-            
-            if (ticks_to_shrink >= 0 && ticks_to_shrink <= 20) {
-                if (item.pos.x < state.next_safe_zone.x_min || item.pos.x > state.next_safe_zone.x_max ||
-                    item.pos.y < state.next_safe_zone.y_min || item.pos.y > state.next_safe_zone.y_max) {
-                    continue; // 食物将消失，跳过
-                }
-            }
-            
-            // 然后检查是否能够及时到达
-            if (!Utils::canReachFoodInTime(head.y, head.x, item.pos.y, item.pos.x, item.lifetime)) {
-                continue; // 跳过无法及时到达的食物
-            }
-            
-            // 确定移动方向
-            Direction move_dir;
-            if (head.x > item.pos.x) move_dir = Direction::LEFT;
-            else if (head.x < item.pos.x) move_dir = Direction::RIGHT;
-            else if (head.y > item.pos.y) move_dir = Direction::UP;
-            else move_dir = Direction::DOWN;
-            
-            // 检查移动安全性
-            unordered_set<Direction> illegals = illegalMove(state);
-            if (illegals.count(move_dir) == 0) {
-                return Utils::dir2num(move_dir);
-            }
-        }
-    }
-    
     // 确定合法移动
     unordered_set<Direction> illegals = illegalMove(state);
     vector<Direction> legalMoves;
