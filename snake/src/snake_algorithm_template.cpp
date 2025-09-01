@@ -498,9 +498,12 @@ namespace Strategy
             if (mp[y][x] > 0) // 普通食物
             {
                 // 识别高分值食物（蛇尸体通常是高分值食物>=5）
-                if (mp[y][x] >= 5) {
-                    // 增加高分值食物的权重
-                    num = mp[y][x] * 40; // 显著提高高分食物优先级
+                if (mp[y][x] >= 10) {
+                    // 极高价值的尸体，极大提高优先级
+                    num = mp[y][x] * 60 + 50; // 更加强调高分尸体价值
+                } else if (mp[y][x] >= 5) {
+                    // 高价值的尸体，显著提高优先级
+                    num = mp[y][x] * 50 + 25; // 显著提高高分食物优先级
                 } else {
                     num = mp[y][x] * 30; // 普通食物基础权重
                 }
@@ -573,11 +576,20 @@ namespace Strategy
                         
                         // 如果敌方蛇更近，竞争系数降低
                         if (dist < self_distance) {
-                            competition_factor *= 0.7f; // 减少30%价值
+                            // 对于高价值尸体，即使竞争也要争取
+                            if (mp[y][x] >= 8) {
+                                competition_factor *= 0.85f; // 对高分尸体，只减少15%价值
+                            } else {
+                                competition_factor *= 0.7f; // 普通食物减少30%价值
+                            }
                         }
                         // 如果敌方蛇距离相近，轻微降低价值
                         else if (dist <= self_distance + 2) {
-                            competition_factor *= 0.9f; // 减少10%价值
+                            if (mp[y][x] >= 8) {
+                                competition_factor *= 0.95f; // 对高分尸体，几乎不降低价值
+                            } else {
+                                competition_factor *= 0.9f; // 普通食物减少10%价值
+                            }
                         }
                     }
                 }
