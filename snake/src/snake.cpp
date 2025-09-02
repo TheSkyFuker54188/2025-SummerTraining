@@ -99,6 +99,12 @@ namespace Strategy {
     TargetEvaluation evaluateTarget(const GameState &state, const Point &target_pos, double base_value, bool is_chest);
     struct DeadEndAnalysis;
     struct TerrainAnalysis;
+    
+    // 添加这些函数的声明
+    int countSafeExits(const GameState &state, const Point &pos);
+    Point findBestNextStep(const GameState &state, const Point &pos);
+    vector<vector<int>> makeMapSnapshot(const GameState &state);
+    double simulateMovementRisk(const GameState &state, int start_y, int start_x, int steps);
 }
 
 namespace Utils
@@ -505,19 +511,14 @@ void read_game_state(GameState &s) {
       s.final_safe_zone.y_max;
 }
 
-unordered_set<Direction> illegalMove(const GameState &state)
-{
+// 基本非法移动检查，返回不能移动的方向
+unordered_set<Direction> basicIllegalCheck(const GameState &state) {
     unordered_set<Direction> illegals;
     const Snake &self = state.get_self();
-    
-    // 本函数会更新紧急模式状态
-    bool emergency_mode = false;
+    const Point &head = self.get_head();
     
     // 确定反方向（不能往回走）
-    auto addReverse = [&]()
-    {
-        switch (self.direction)
-        {
+    switch (self.direction) {
         case 3: // DOWN
             illegals.insert(Direction::UP);
             break;
@@ -531,81 +532,181 @@ unordered_set<Direction> illegalMove(const GameState &state)
             illegals.insert(Direction::LEFT);
             break;
         }
-    };
-
-    // 检查方向是否合法的辅助函数
-    auto checkDirectionLegality = [&](Direction dir, bool is_emergency) {
-        const Point &head = self.get_head();
+    
+    // 检查四个方向
+    for (auto dir : validDirections) {
+        // 跳过已经标记为非法的方向
+        if (illegals.count(dir) > 0) continue;
+        
         const auto [y, x] = Utils::nextPos({head.y, head.x}, dir);
         
         // 检查是否越界
         if (!Utils::boundCheck(y, x)) {
-            return false; // 不合法
+            illegals.insert(dir);
+            continue;
         }
         
-        // 安全区检查 - 即使在紧急情况下也不允许离开安全区
+        // 安全区检查
         if (x < state.current_safe_zone.x_min || x > state.current_safe_zone.x_max ||
             y < state.current_safe_zone.y_min || y > state.current_safe_zone.y_max) {
                 // 只有当护盾时间足够时才允许离开安全区
                 if (self.shield_time <= 1) {
-                return false; // 不合法
+                    illegals.insert(dir);
+                continue;
+                }
             }
-        }
         
         // 墙检查 - 任何情况下都不能穿墙
         if (mp[y][x] == -4) {
-            return false; // 不合法
+                illegals.insert(dir);
+            continue;
         }
         
-        // 陷阱检查
-        if (mp[y][x] == -2 && !is_emergency) {
-            return false; // 非紧急情况下不能走陷阱
+        // 陷阱检查 - 常规情况下不去陷阱
+        if (mp[y][x] == -2) {
+                    illegals.insert(dir);
+            continue;
         }
         
-        // 蛇身体检查
+        // 蛇身检查 - 常规情况下不能穿过蛇身
         if (mp2[y][x] == -5) {
-            // 紧急模式下，如果护盾时间够或能开护盾，可以穿过蛇身
-            if (is_emergency) {
-                return (self.shield_time >= 2 || (self.shield_cd == 0 && self.score > 20) || 
-                       state.remaining_ticks >= 255 - 9 + 2);
-            } else {
-                // 非紧急模式下，需要足够的护盾时间
-                return (self.shield_time >= 2);
+            // 如果护盾时间不够，不能穿过蛇身
+            if (self.shield_time < 2) {
+                illegals.insert(dir);
+                continue;
             }
         }
         
-        // 蛇头或尾部可能移动区域
-        if ((mp2[y][x] == -6 || mp2[y][x] == -7) && !is_emergency) {
-            return (self.shield_time >= 2); // 非紧急模式下需要足够护盾时间
+        // 危险区域检查 - 蛇头/尾可能移动区域
+        if (mp2[y][x] == -6 || mp2[y][x] == -7) {
+            // 如果护盾时间不够，避开危险区域
+            if (self.shield_time < 2) {
+                    illegals.insert(dir);
+                continue;
+            }
+        }
+    }
+    
+    return illegals;
+}
+
+// 紧急情况下的非法移动检查，放宽条件
+unordered_set<Direction> emergencyIllegalCheck(const GameState &state) {
+    unordered_set<Direction> illegals;
+    const Snake &self = state.get_self();
+    
+    // 确定反方向（不能往回走）
+    switch (self.direction) {
+    case 3: // DOWN
+        illegals.insert(Direction::UP);
+        break;
+    case 1: // UP
+        illegals.insert(Direction::DOWN);
+        break;
+    case 0: // LEFT
+        illegals.insert(Direction::RIGHT);
+        break;
+    default: // RIGHT
+        illegals.insert(Direction::LEFT);
+        break;
+    }
+    
+    // 放宽条件检查四个方向
+    for (auto dir : validDirections) {
+        // 跳过已经标记为非法的方向
+        if (illegals.count(dir) > 0) continue;
+        
+        const auto [y, x] = Utils::nextPos({self.get_head().y, self.get_head().x}, dir);
+        
+        // 检查是否越界 - 紧急情况下仍不能越界
+        if (!Utils::boundCheck(y, x)) {
+                illegals.insert(dir);
+            continue;
+            }
+        
+        // 安全区检查 - 紧急情况下仍要求安全区内
+                if (x < state.current_safe_zone.x_min || x > state.current_safe_zone.x_max || 
+            y < state.current_safe_zone.y_min || y > state.current_safe_zone.y_max) {
+                    // 只有当护盾时间足够时才允许离开安全区
+                    if (self.shield_time <= 1) {
+                        illegals.insert(dir);
+                continue;
+                    }
+                }
+        
+        // 墙检查 - 紧急情况下仍不能穿墙
+        if (mp[y][x] == -4) {
+                    illegals.insert(dir);
+            continue;
         }
         
-        return true; // 默认合法
-    };
+        // 蛇身检查 - 紧急情况下放宽条件
+        if (mp2[y][x] == -5) {
+            // 如果有足够护盾或能开护盾，可以考虑穿过
+                    if (!(self.shield_time >= 2 || (self.shield_cd == 0 && self.score > 20) ||
+                  state.remaining_ticks >= 255 - 9 + 2)) {
+                        illegals.insert(dir);
+                continue;
+            }
+        }
+        
+        // 紧急情况下不再检查陷阱和危险区域
+    }
+    
+    return illegals;
+}
 
-    // 自己方向的反方向不能走
-    addReverse();
-
-    // 第一轮检查
+// 添加默认参数值为3
+unordered_set<Direction> illegalMove(const GameState &state, int look_ahead = 3)
+{
+    // 先执行基本检查
+    unordered_set<Direction> illegals = basicIllegalCheck(state);
+    const Snake &self = state.get_self();
+    
+    // 如果基本检查已将所有方向标记为非法，启用紧急模式
+    if (illegals.size() == 4) {
+        return emergencyIllegalCheck(state); // 现有紧急模式检查
+    }
+    
+    // 前瞻性评估剩余合法方向
+    const Point &head = self.get_head();
     for (auto dir : validDirections) {
-        if (!checkDirectionLegality(dir, false)) {
+        if (illegals.count(dir) > 0) continue; // 跳过已标记为非法的方向
+        
+        const auto [ny, nx] = Utils::nextPos({head.y, head.x}, dir);
+        
+        // 模拟前进look_ahead步，评估是否会陷入险境
+        // 直接使用向前声明的函数
+        double future_risk = -500; // 默认风险值
+        
+        // 基本风险评估 - 通过计算安全出口的数量
+        int safe_exits = 0;
+        for (auto exit_dir : validDirections) {
+            const auto [exit_y, exit_x] = Utils::nextPos({ny, nx}, exit_dir);
+            // 检查是否是有效出口(在界内，不是墙，不是蛇身，在安全区)
+            if (Utils::boundCheck(exit_y, exit_x) && 
+                mp[exit_y][exit_x] != -4 && mp2[exit_y][exit_x] != -5 &&
+                exit_x >= state.current_safe_zone.x_min && exit_x <= state.current_safe_zone.x_max && 
+                exit_y >= state.current_safe_zone.y_min && exit_y <= state.current_safe_zone.y_max) {
+                safe_exits++;
+            }
+        }
+        
+        // 出口越少，风险越高
+        if (safe_exits == 0) future_risk = -2000;  // 死路
+        else if (safe_exits == 1) future_risk = -1200;  // 只有一个出口，高风险
+        else if (safe_exits == 2) future_risk = -800;   // 两个出口，中等风险
+        else future_risk = -200;  // 多个出口，相对安全
+        
+        // 如果前瞻风险过高，标记为非法
+        if (future_risk < -1000) {
             illegals.insert(dir);
         }
     }
-
-    // 如果四种方向都不行，进入紧急模式，重新评估
+    
+    // 如果前瞻性检查将所有方向标记为非法，恢复到基本合法方向
     if (illegals.size() == 4) {
-        emergency_mode = true;
-        illegals.clear();
-
-        // 自己方向的反方向不能走
-        addReverse();
-
-        // 放宽条件下的第二轮检查
-        for (auto dir : validDirections) {
-            if (!checkDirectionLegality(dir, true)) {
-                illegals.insert(dir);
-            }
-        }
+        illegals = basicIllegalCheck(state);
     }
 
     return illegals;
@@ -615,6 +716,12 @@ namespace Strategy
 {
     // 前向声明evaluateTrap函数，确保在bfs函数之前可见
     double evaluateTrap(const GameState &state, int trap_y, int trap_x);
+    
+    // 添加新函数前向声明
+    int countSafeExits(const GameState &state, const Point &pos);
+    Point findBestNextStep(const GameState &state, const Point &pos);
+    vector<vector<int>> makeMapSnapshot(const GameState &state);
+    double simulateMovementRisk(const GameState &state, int start_y, int start_x, int steps);
 
     // 地形分析结构体，用于评估死胡同和瓶颈
     struct TerrainAnalysis {
@@ -1173,9 +1280,9 @@ namespace Strategy
             int base_value = mp[y][x];
             
             // 计算到蛇头的距离
-            const auto &snake_head = state.get_self().get_head();
-            int head_dist = abs(snake_head.y - y) + abs(snake_head.x - x);
-            
+                const auto &snake_head = state.get_self().get_head();
+                int head_dist = abs(snake_head.y - y) + abs(snake_head.x - x);
+                
             // 使用新的辅助函数评估食物价值
             double num = (mp[y][x] != 0 && mp[y][x] != -2 && !can_reach) ? 0 : 
                         evaluateFoodValue(state, y, x, base_value, head_dist);
@@ -1226,10 +1333,10 @@ namespace Strategy
                 int self_distance = abs(self_head.y - y) + abs(self_head.x - x);
                 
                 // 检查其他蛇与目标的距离关系
-                for (const auto &snake : state.snakes) {
-                    if (snake.id != MYID && snake.id != -1) {
-                        int dist = abs(snake.get_head().y - y) + abs(snake.get_head().x - x);
-                    
+                    for (const auto &snake : state.snakes) {
+                        if (snake.id != MYID && snake.id != -1) {
+                            int dist = abs(snake.get_head().y - y) + abs(snake.get_head().x - x);
+                        
                         // 如果敌方蛇更近，竞争系数降低
                         if (dist < self_distance) {
                             // 对高价值尸体的竞争调整
@@ -1340,7 +1447,7 @@ namespace Strategy
         if (wall_count != 2 || adjacent_cells.size() != 2) {
             return -10000; // 不是拐角
         }
-      
+        
         // 确认墙是否相邻形成直角(两墙不在对角线上)
         bool is_diagonal = true;
         if (possible_exits.size() == 2) {
@@ -1384,7 +1491,7 @@ namespace Strategy
             next_x = nx;
             break;
         }
-      
+        
         // 如果没找到有效出口，说明这是死胡同
         if (next_y == -1 || next_x == -1) {
             return -10000; // 不是标准拐角，可能是死胡同
@@ -1404,24 +1511,82 @@ namespace Strategy
     
     // 新增NAIVE陷阱评估函数
     double evaluateTrap(const GameState &state, int trap_y, int trap_x) {
-        // 显式标记参数为已使用，避免警告
-        (void)trap_y;
-        (void)trap_x;
+        // 不再需要这些参数标记，因为我们实际会使用它们
+        // (void)trap_y;
+        // (void)trap_x;
         
         const auto &self = state.get_self();
+        double score = -1000; // 默认高风险
         
-        // 基础分：默认陷阱非常危险
-        double score = -1000;
+        // 1. 检查陷阱周围的出口数量
+        int exits = 0;
+        vector<pair<int, int>> exit_points;
         
-        // 如果蛇当前分数很高，减轻陷阱惩罚
-        if (self.score > 50) {
-            score = -800; // 减轻惩罚
-        } else if (self.score > 100) {
-            score = -600; // 更进一步减轻惩罚
+        for (auto dir : validDirections) {
+            const auto [y, x] = Utils::nextPos({trap_y, trap_x}, dir);
+            // 有效出口：在界内，不是墙，不是蛇身，不是另一个陷阱
+            if (Utils::boundCheck(y, x) && 
+                mp[y][x] != -4 && mp2[y][x] != -5 && mp[y][x] != -2) {
+                exits++;
+                exit_points.push_back({y, x});
+            }
         }
         
-        // 检测是否处于紧急情况（四周都是障碍）
-        bool surrounded = true;
+        // 更多出口 = 更安全
+        score += exits * 200;
+        
+        // 2. 评估各出口的安全程度
+        int safe_exits = 0;
+        for (const auto &exit : exit_points) {
+            // 分析出口的地形风险
+            auto exit_terrain = analyzeTerrainRisk(state, exit.first, exit.second);
+            
+            // 如果出口不是死胡同或高风险瓶颈，视为安全出口
+            if (!exit_terrain.is_dead_end && exit_terrain.risk_score > -500) {
+                safe_exits++;
+                score += 100; // 每个安全出口加分
+            }
+            
+            // 额外检查：出口附近是否有敌方蛇
+            bool enemy_near_exit = false;
+            for (const auto &snake : state.snakes) {
+                if (snake.id != MYID && snake.id != -1) {
+                    const Point &enemy_head = snake.get_head();
+                    int dist_to_exit = abs(enemy_head.y - exit.first) + abs(enemy_head.x - exit.second);
+                    
+                    // 如果敌方蛇距离出口很近，这个出口不安全
+                    if (dist_to_exit <= 2) {
+                        enemy_near_exit = true;
+                        break;
+                    }
+                }
+            }
+            
+            // 如果出口附近有敌方蛇，降低分数
+            if (enemy_near_exit) {
+                score -= 200;
+            } else {
+                score += 50; // 无敌方蛇的出口更安全
+            }
+        }
+        
+        // 如果没有安全出口，严重降低分数
+        if (safe_exits == 0 && exits > 0) {
+            score -= 500; // 有出口但都不安全
+        } else if (exits == 0) {
+            score -= 1000; // 完全没有出口
+        }
+        
+        // 根据蛇当前状态调整风险容忍度
+        if (self.score > 50) {
+            score += 200; // 分数较高时，提高风险容忍度
+        }
+        if (self.score > 100) {
+            score += 200; // 分数很高时，进一步提高风险容忍度
+        }
+        
+        // 紧急情况下接受较高风险
+        bool is_emergency = true;
         const auto &head = self.get_head();
         for (auto dir : validDirections) {
             const auto [next_y, next_x] = Utils::nextPos({head.y, head.x}, dir);
@@ -1430,15 +1595,15 @@ namespace Strategy
                 if (mp[next_y][next_x] != -4 && mp2[next_y][next_x] != -5 && 
                     next_x >= state.current_safe_zone.x_min && next_x <= state.current_safe_zone.x_max && 
                     next_y >= state.current_safe_zone.y_min && next_y <= state.current_safe_zone.y_max) {
-                    surrounded = false;
+                    is_emergency = false;
                     break;
                 }
             }
         }
         
         // 如果蛇即将死亡(四周都是障碍)，接受陷阱
-        if (surrounded) {
-            score = -100; // 显著减轻惩罚
+        if (is_emergency) {
+            score = max(score, -300.0); // 紧急情况下提高风险容忍
         }
         
         return score;
@@ -1473,7 +1638,7 @@ namespace Strategy
 
     // 评估目标的价值和安全性
     TargetEvaluation evaluateTarget(const GameState &state, const Point &target_pos, double base_value, bool is_chest) {
-        const auto &head = state.get_self().get_head();
+    const auto &head = state.get_self().get_head();
         int distance = abs(head.y - target_pos.y) + abs(head.x - target_pos.x);
       
         // 基础评估
@@ -1531,6 +1696,155 @@ namespace Strategy
         }
       
         return result;
+    }
+
+    // 计算位置的安全出口数量
+    int countSafeExits(const GameState &state, const Point &pos) {
+        int safe_exits = 0;
+        
+        for (auto dir : validDirections) {
+            const auto [ny, nx] = Utils::nextPos({pos.y, pos.x}, dir);
+            
+            // 检查是否是有效出口(在界内，不是墙，不是蛇身，在安全区)
+            if (Utils::boundCheck(ny, nx) && 
+                mp[ny][nx] != -4 && mp2[ny][nx] != -5 &&
+                nx >= state.current_safe_zone.x_min && nx <= state.current_safe_zone.x_max && 
+                ny >= state.current_safe_zone.y_min && ny <= state.current_safe_zone.y_max) {
+                safe_exits++;
+            }
+        }
+        
+        return safe_exits;
+    }
+    
+    // 找出当前位置的最佳下一步方向
+    Point findBestNextStep(const GameState &state, const Point &pos) {
+        Point best_next = pos; // 默认原地不动
+        double best_score = -10000;
+        
+        for (auto dir : validDirections) {
+            const auto [ny, nx] = Utils::nextPos({pos.y, pos.x}, dir);
+            
+            // 检查位置有效性
+            if (!Utils::boundCheck(ny, nx) || mp[ny][nx] == -4 || mp2[ny][nx] == -5) {
+                continue; // 无效位置
+            }
+            
+            // 检查位置是否在安全区内
+            if (nx < state.current_safe_zone.x_min || nx > state.current_safe_zone.x_max || 
+                ny < state.current_safe_zone.y_min || ny > state.current_safe_zone.y_max) {
+                continue; // 安全区外
+            }
+            
+            // 简单评估该位置
+            double score = 0;
+            
+            // 评估出口数量
+            int exits = countSafeExits(state, {ny, nx});
+            score += exits * 100; // 出口越多越好
+            
+            // 避免陷阱
+            if (mp[ny][nx] == -2) {
+                score -= 300; // 陷阱惩罚
+            }
+            
+            // 避开敌方蛇头附近
+            for (const auto &snake : state.snakes) {
+                if (snake.id != MYID && snake.id != -1) {
+                    const Point &enemy_head = snake.get_head();
+                    int dist = abs(enemy_head.y - ny) + abs(enemy_head.x - nx);
+                    
+                    // 距离敌方蛇头越近越危险
+                    if (dist <= 2) {
+                        score -= (3 - dist) * 500; // 越近惩罚越大
+                    }
+                }
+            }
+            
+            // 更新最佳选择
+            if (score > best_score) {
+                best_score = score;
+                best_next = {ny, nx};
+            }
+        }
+        
+        return best_next;
+    }
+    
+    // 创建地图快照用于模拟移动
+    vector<vector<int>> makeMapSnapshot(const GameState &state) {
+        // 创建地图副本
+        vector<vector<int>> map_copy(MAXM, vector<int>(MAXN, 0));
+        
+        // 复制墙体
+        for (int i = 0; i < MAXM; i++) {
+            for (int j = 0; j < MAXN; j++) {
+                if (mp[i][j] == -4) { // 墙
+                    map_copy[i][j] = -4;
+                }
+            }
+        }
+        
+        // 复制蛇身体
+        for (const auto &snake : state.snakes) {
+            for (const auto &part : snake.body) {
+                if (Utils::boundCheck(part.y, part.x)) {
+                    map_copy[part.y][part.x] = -5; // 蛇身
+                }
+            }
+        }
+        
+        return map_copy;
+    }
+    
+    // 模拟移动风险评估
+    double simulateMovementRisk(const GameState &state, int start_y, int start_x, int steps) {
+        double risk = 0;
+        Point current = {start_y, start_x};
+        
+        // 创建地图快照
+        auto map_copy = makeMapSnapshot(state);
+        
+        for (int i = 0; i < steps; i++) {
+            // 计算该位置的可行出口数量
+            int exits = countSafeExits(state, current);
+            
+            // 出口越少，风险越高
+            if (exits == 0) return -2000;  // 死路
+            if (exits == 1) risk -= 500;   // 只有一个出口，高风险
+            if (exits == 2) risk -= 100;   // 两个出口，中等风险
+            
+            // 检查当前位置是否有陷阱
+            if (mp[current.y][current.x] == -2) {
+                risk -= 200; // 陷阱惩罚
+            }
+            
+            // 检查当前位置是否安全
+            auto terrain = analyzeTerrainRisk(state, current.y, current.x);
+            if (terrain.is_dead_end) {
+                risk -= 800; // 死胡同惩罚
+            }
+            if (terrain.is_bottleneck) {
+                risk -= 300; // 瓶颈惩罚
+            }
+            
+            // 模拟选择最佳下一步
+            Point next_pos = findBestNextStep(state, current);
+            
+            // 如果没有找到合适的下一步或者原地踏步
+            if (next_pos.y == current.y && next_pos.x == current.x) {
+                risk -= 1000; // 严重惩罚
+                break; // 中断模拟
+            }
+            
+            // 更新当前位置
+            current = next_pos;
+            
+            // 更新地图快照，标记已访问位置
+            map_copy[current.y][current.x] = -5; // 标记为已访问
+        }
+        
+        return risk;
     }
 }
 
