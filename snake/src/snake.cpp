@@ -1370,46 +1370,40 @@ namespace Strategy
     }
 }
 
+// 添加到judge函数之前（约1372行）
+Direction moveToTarget(const GameState &state, const Point &target) {
+    const auto &head = state.get_self().get_head();
+  
+    // 确定移动方向
+    Direction move_dir;
+    if (head.x > target.x) move_dir = Direction::LEFT;
+    else if (head.x < target.x) move_dir = Direction::RIGHT;
+    else if (head.y > target.y) move_dir = Direction::UP;
+    else move_dir = Direction::DOWN;
+  
+    // 检查移动安全性
+    unordered_set<Direction> illegals = illegalMove(state);
+    return (illegals.count(move_dir) == 0) ? move_dir : Direction::UP; // 返回UP作为无效值
+}
+
 int judge(const GameState &state)
 {
     // 更新目标锁定状态
     lock_on_target(state);
-    
-    // 即时反应 - 处理近距离高价值目标
-    const auto &head = state.get_self().get_head();
-
-    // 如果持有钥匙且有宝箱目标，优先前往宝箱
-    if (state.get_self().has_key && is_chest_target && current_target.x != -1 && current_target.y != -1) {
-        // 确定移动方向
-        Direction move_dir;
-        if (head.x > current_target.x) move_dir = Direction::LEFT;
-        else if (head.x < current_target.x) move_dir = Direction::RIGHT;
-        else if (head.y > current_target.y) move_dir = Direction::UP;
-        else move_dir = Direction::DOWN;
+  
+    // 处理宝箱和钥匙的目标锁定
+    if ((state.get_self().has_key && is_chest_target && current_target.x != -1 && current_target.y != -1) ||
+        (!state.get_self().has_key && is_key_target && current_target.x != -1 && current_target.y != -1)) {
       
-        // 检查移动安全性
-        unordered_set<Direction> illegals = illegalMove(state);
-        if (illegals.count(move_dir) == 0) {
+        Direction move_dir = moveToTarget(state, current_target);
+        if (move_dir != Direction::UP || state.get_self().direction == 1) { // 不是默认无效值，或者当前方向就是UP
             return Utils::dir2num(move_dir);
         }
     }
   
-    // 如果有钥匙目标，优先前往钥匙
-    if (!state.get_self().has_key && is_key_target && current_target.x != -1 && current_target.y != -1) {
-        // 确定移动方向
-        Direction move_dir;
-        if (head.x > current_target.x) move_dir = Direction::LEFT;
-        else if (head.x < current_target.x) move_dir = Direction::RIGHT;
-        else if (head.y > current_target.y) move_dir = Direction::UP;
-        else move_dir = Direction::DOWN;
-      
-        // 检查移动安全性
-        unordered_set<Direction> illegals = illegalMove(state);
-        if (illegals.count(move_dir) == 0) {
-            return Utils::dir2num(move_dir);
-        }
-    }
-    
+    // 即时反应 - 处理近距离高价值目标
+    const auto &head = state.get_self().get_head();
+
     // 距离分层常量定义
     const int VERY_CLOSE_RANGE = 4;  // 增加普通食物即时反应范围
     const int CLOSE_RANGE = 6;       // 近距离

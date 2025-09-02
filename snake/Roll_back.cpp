@@ -1306,7 +1306,7 @@ namespace Strategy
         (void)trap_y;
         (void)trap_x;
         
-        const auto &self = state.get_self();
+    const auto &self = state.get_self();
         
         // 基础分：默认陷阱非常危险
         double score = -1000;
@@ -1646,19 +1646,6 @@ int judge(const GameState &state)
         {
             maxF = eval;
             choice = dir;
-        }
-        
-        // 如果分数相同，有一定概率选择新方向（增加随机性）
-        if (eval == maxF)
-        {
-            const int p = 2;
-            static mt19937 gen(chrono::steady_clock::now().time_since_epoch().count());
-            uniform_int_distribution<> distrib(0, p - 1);
-            const int random = distrib(gen);
-            if (random == 0)
-            {
-                choice = dir;
-            }
         }
     }
     
