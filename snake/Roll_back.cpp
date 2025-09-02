@@ -3,11 +3,13 @@
 #include <random>
 #include <unordered_map>
 #include <vector>
+//* 新增头文件
 #include <cmath>
 #include <cstring>
 #include <queue>
 #include <algorithm>
 #include <unordered_set>
+#include <climits>
 
 using namespace std;
 
@@ -70,7 +72,7 @@ namespace Utils
         }
     }
 
-    // 判断食物是否可以及时到达 - 重载版本1：直接使用坐标和生命周期
+    // 判断食物是否可以及时到达 - 直接使用坐标和生命周期
     bool canReachFoodInTime(int head_y, int head_x, int food_y, int food_x, int lifetime) 
     {
         // 计算曼哈顿距离
@@ -82,16 +84,6 @@ namespace Utils
         
         // 简单判断：如果预计到达时间超过食物剩余生命周期，则忽略该食物
         return estimated_ticks < lifetime;
-    }
-
-    // 随机地从一个 vector 中抽取一个元素
-    template <typename T>
-    T randomChoice(const vector<T> &vec)
-    {
-        static mt19937 rng(chrono::steady_clock::now().time_since_epoch().count());
-        uniform_int_distribution<> distrib(0, vec.size() - 1);
-        const int randomIndex = distrib(rng);
-        return vec[randomIndex];
     }
 
     // 将坐标转化为string (用于拐角检测)
@@ -174,60 +166,196 @@ struct GameState {
 // 游戏地图状态: mp用于物品, mp2用于蛇的位置
 int mp[MAXM][MAXN], mp2[MAXM][MAXN];
 
-// 简化的目标锁定机制（暂未启用）
+// 简化的目标锁定机制
 static Point current_target = {-1, -1};
 static int target_value = 0;
 static int target_lock_time = 0;
 
-// 目标锁定函数（保留接口，但暂不实际启用）
+// 宝箱钥匙目标锁定标志
+static bool is_key_target = false;  // 是否锁定钥匙
+static bool is_chest_target = false; // 是否锁定宝箱
+
+// 目标锁定函数
 void lock_on_target(const GameState &state) {
-    // 删除未使用的变量
-    // const auto &head = state.get_self().get_head();
-    
+    const auto &self = state.get_self();
+    const auto &head = self.get_head();
+  
     // 更新锁定状态
     if (target_lock_time > 0) {
         target_lock_time--;
     }
-    
-    // 检查当前目标是否仍然存在
-    bool target_exists = false;
-    if (current_target.y != -1 && current_target.x != -1) {
+  
+    // 如果宝箱消失了（可能被开启）
+    if (is_chest_target && state.chests.empty()) {
+        current_target = {-1, -1};
+        target_value = 0;
+        is_chest_target = false;
+    }
+  
+    // 如果所有钥匙都消失了
+    if (is_key_target && state.keys.empty()) {
+        current_target = {-1, -1};
+        target_value = 0;
+        is_key_target = false;
+    }
+  
+    // 如果持有钥匙，优先锁定宝箱
+    if (self.has_key && !state.chests.empty()) {
+        // 重置之前的钥匙目标
+        is_key_target = false;
+      
+        // 如果还没有锁定宝箱或宝箱位置已变化，重新锁定宝箱
+        if (!is_chest_target || current_target.x == -1 || current_target.y == -1) {
+            // 找到最近的宝箱
+            int min_dist = INT_MAX;
+            const Chest* nearest_chest = nullptr;
+          
+            for (const auto &chest : state.chests) {
+                int dist = abs(head.y - chest.pos.y) + abs(head.x - chest.pos.x);
+              
+                if (dist < min_dist) {
+                    min_dist = dist;
+                    nearest_chest = &chest;
+                }
+            }
+          
+            // 锁定最近的宝箱
+            if (nearest_chest != nullptr) {
+                current_target = nearest_chest->pos;
+                target_value = nearest_chest->score;
+                target_lock_time = min(min_dist + 10, 30); // 给足够时间去宝箱
+                is_chest_target = true;
+              
+                // 如果钥匙即将掉落，缩短锁定时间
+                for (const auto &key : state.keys) {
+                    if (key.holder_id == MYID) {
+                        if (key.remaining_time < min_dist) {
+                            // 钥匙可能会在到达宝箱前掉落，调整锁定时间
+                            target_lock_time = key.remaining_time - 1;
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+      
+        // 检查宝箱是否仍然存在
+        bool chest_exists = false;
+        for (const auto &chest : state.chests) {
+            if (chest.pos.y == current_target.y && chest.pos.x == current_target.x) {
+                chest_exists = true;
+                break;
+            }
+        }
+      
+        if (!chest_exists) {
+            // 宝箱已被开启或消失
+            current_target = {-1, -1};
+            target_value = 0;
+            is_chest_target = false;
+        }
+    }
+    // 如果没有钥匙，考虑锁定钥匙
+    else if (!self.has_key && !state.keys.empty()) {
+        // 重置之前的宝箱目标
+        is_chest_target = false;
+      
+        // 如果没有锁定钥匙或锁定时间结束，寻找新的钥匙
+        if (!is_key_target || target_lock_time <= 0 || current_target.x == -1 || current_target.y == -1) {
+            const Key* best_key = nullptr;
+            int min_dist = INT_MAX;
+          
+            // 查找最近的安全钥匙
+            for (const auto &key : state.keys) {
+                // 只考虑地图上的钥匙
+                if (key.holder_id == -1) {
+                    // 检查钥匙是否在安全区内
+                    if (key.pos.x < state.current_safe_zone.x_min || key.pos.x > state.current_safe_zone.x_max ||
+                        key.pos.y < state.current_safe_zone.y_min || key.pos.y > state.current_safe_zone.y_max) {
+                        continue;  // 忽略安全区外的钥匙
+                    }
+                  
+                    // 计算到钥匙的距离
+                    int dist = abs(head.y - key.pos.y) + abs(head.x - key.pos.x);
+                  
+                    // 检查钥匙是否会因安全区收缩而消失
+                    int current_tick = MAX_TICKS - state.remaining_ticks;
+                    int ticks_to_shrink = state.next_shrink_tick - current_tick;
+                  
+                    if (ticks_to_shrink >= 0 && ticks_to_shrink <= 15) {
+                        if (key.pos.x < state.next_safe_zone.x_min || key.pos.x > state.next_safe_zone.x_max ||
+                            key.pos.y < state.next_safe_zone.y_min || key.pos.y > state.next_safe_zone.y_max) {
+                            continue;  // 即将在安全区收缩中消失的钥匙
+                        }
+                    }
+                  
+                    if (dist < min_dist) {
+                        min_dist = dist;
+                        best_key = &key;
+                    }
+                }
+            }
+          
+            // 锁定最近的安全钥匙
+            if (best_key != nullptr) {
+                current_target = best_key->pos;
+                target_value = 40;  // 钥匙的虚拟价值（考虑到宝箱的高价值）
+                target_lock_time = min(min_dist + 5, 20);  // 给予足够的时间去拿钥匙
+                is_key_target = true;
+            }
+        }
+      
+        // 检查钥匙是否仍然存在
+        if (is_key_target) {
+            bool key_exists = false;
+            for (const auto &key : state.keys) {
+                if (key.holder_id == -1 && 
+                    abs(key.pos.y - current_target.y) <= 1 && 
+                    abs(key.pos.x - current_target.x) <= 1) {
+                    key_exists = true;
+                    // 更新为精确位置
+                    current_target = key.pos;
+                    break;
+                }
+            }
+          
+            if (!key_exists) {
+                // 钥匙已被拿走或消失
+                current_target = {-1, -1};
+                target_value = 0;
+                is_key_target = false;
+            }
+        }
+    }
+    // 如果没有钥匙和宝箱相关目标，重置目标锁定
+    else if (is_key_target || is_chest_target) {
+        current_target = {-1, -1};
+        target_value = 0;
+        is_key_target = false;
+        is_chest_target = false;
+    }
+  
+    // 检查当前目标是否仍然存在 (普通食物目标)
+    if (!is_key_target && !is_chest_target && current_target.y != -1 && current_target.x != -1) {
+        bool target_exists = false;
         for (const auto &item : state.items) {
             // 使用近似匹配检测目标是否仍然存在
             if (abs(item.pos.y - current_target.y) <= 1 && 
                 abs(item.pos.x - current_target.x) <= 1 &&
                 item.value >= target_value * 0.8) { // 允许价值有小幅下降
-                
+              
                 current_target = item.pos; // 更新为精确位置
                 target_exists = true;
                 break;
             }
         }
-    }
-    
-    // 如果目标不再存在或锁定时间结束，重置锁定状态
-    if (!target_exists && target_lock_time <= 0) {
-        current_target = {-1, -1};
-        target_value = 0;
-    }
-    
-    // 如果没有锁定目标，尝试锁定新目标
-    // 注意：暂不启用目标锁定功能，因此此处不执行实际锁定
-    /*
-    if (current_target.y == -1 || current_target.x == -1) {
-        for (const auto &item : state.items) {
-            if (item.value >= 10) { // 极高价值尸体
-                int dist = abs(head.y - item.pos.y) + abs(head.x - item.pos.x);
-                if (dist <= 5) { // 更严格的距离要求
-                    current_target = item.pos;
-                    target_value = item.value;
-                    target_lock_time = min(dist + 2, 7); // 更短的锁定时间
-                    break;
-                }
-            }
+      
+        // 如果目标不再存在或锁定时间结束，重置锁定状态
+        if (!target_exists && target_lock_time <= 0) {
+            current_target = {-1, -1};
+            target_value = 0;
         }
     }
-    */
 }
 
 void read_game_state(GameState &s) {
@@ -1123,11 +1251,43 @@ namespace Strategy
 
 int judge(const GameState &state)
 {
-    // 更新目标锁定状态（保留接口，暂不启用实际锁定功能）
+    // 更新目标锁定状态
     lock_on_target(state);
     
     // 即时反应 - 处理近距离高价值目标
     const auto &head = state.get_self().get_head();
+
+    // 如果持有钥匙且有宝箱目标，优先前往宝箱
+    if (state.get_self().has_key && is_chest_target && current_target.x != -1 && current_target.y != -1) {
+        // 确定移动方向
+        Direction move_dir;
+        if (head.x > current_target.x) move_dir = Direction::LEFT;
+        else if (head.x < current_target.x) move_dir = Direction::RIGHT;
+        else if (head.y > current_target.y) move_dir = Direction::UP;
+        else move_dir = Direction::DOWN;
+      
+        // 检查移动安全性
+        unordered_set<Direction> illegals = illegalMove(state);
+        if (illegals.count(move_dir) == 0) {
+            return Utils::dir2num(move_dir);
+        }
+    }
+  
+    // 如果有钥匙目标，优先前往钥匙
+    if (!state.get_self().has_key && is_key_target && current_target.x != -1 && current_target.y != -1) {
+        // 确定移动方向
+        Direction move_dir;
+        if (head.x > current_target.x) move_dir = Direction::LEFT;
+        else if (head.x < current_target.x) move_dir = Direction::RIGHT;
+        else if (head.y > current_target.y) move_dir = Direction::UP;
+        else move_dir = Direction::DOWN;
+      
+        // 检查移动安全性
+        unordered_set<Direction> illegals = illegalMove(state);
+        if (illegals.count(move_dir) == 0) {
+            return Utils::dir2num(move_dir);
+        }
+    }
     
     // 距离分层常量定义
     const int VERY_CLOSE_RANGE = 4;  // 增加普通食物即时反应范围

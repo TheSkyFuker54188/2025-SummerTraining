@@ -509,9 +509,9 @@ unordered_set<Direction> illegalMove(const GameState &state)
         else
         {
             // 添加安全区检查
-            if (x < state.current_safe_zone.x_min || x > state.current_safe_zone.x_max || 
-                y < state.current_safe_zone.y_min || y > state.current_safe_zone.y_max)
-            {
+        if (x < state.current_safe_zone.x_min || x > state.current_safe_zone.x_max ||
+            y < state.current_safe_zone.y_min || y > state.current_safe_zone.y_max)
+        {
                 // 只有当护盾时间足够时才允许离开安全区
                 if (self.shield_time <= 1) {
                     illegals.insert(dir);
@@ -704,42 +704,66 @@ namespace Strategy
             }
         }
         
-        // 特殊检查：如果在关口位置，小心进入
-        bool flag = false;
-        if (sy == 9 && sx == 20)
-        {
-            const int t = mp2[18 - fy][20];
-            flag = true;
-            if (t == -5 || t == -6 || t == -7)
-            {
-                return -1000;
+        // 动态瓶颈区域检测（替换原有硬编码的特殊位置检测）
+        bool is_bottleneck = false;
+        int wall_count = 0;
+        int danger_direction_count = 0;
+        vector<pair<int, int>> exit_directions;
+        
+        // 检查周围有多少墙或障碍物
+        for (auto dir : validDirections) {
+            const auto [ny, nx] = Utils::nextPos({sy, sx}, dir);
+            if (!Utils::boundCheck(ny, nx) || mp[ny][nx] == -4) {
+                wall_count++; // 墙或边界
+            } else if (mp2[ny][nx] == -5) {
+                wall_count++; // 蛇身体部分，完全阻挡
+            } else if (mp2[ny][nx] == -6 || mp2[ny][nx] == -7) {
+                danger_direction_count++; // 危险方向（蛇头/尾可能移动区域）
+            } else {
+                // 记录可能的出口方向
+                exit_directions.push_back({ny, nx});
             }
         }
-        if (sy == 21 && sx == 20)
-        {
-            const int t = mp2[42 - fy][20];
-            flag = true;
-            if (t == -5 || t == -6 || t == -7)
-            {
-                return -1000;
+        
+        // 如果周围有大量障碍，且可移动方向很少，视为瓶颈
+        if (wall_count >= 2 && exit_directions.size() <= 2) {
+            is_bottleneck = true;
+            
+            // 检查出口方向是否安全
+            for (const auto& [exit_y, exit_x] : exit_directions) {
+                bool exit_safe = true;
+                
+                // 检查这个出口附近是否有敌方蛇
+                for (const auto &snake : state.snakes) {
+                    if (snake.id != MYID && snake.id != -1) {
+                        const Point &enemy_head = snake.get_head();
+                        int dist_to_exit = abs(enemy_head.y - exit_y) + abs(enemy_head.x - exit_x);
+                        
+                        // 如果敌方蛇距离出口很近，这个出口不安全
+                        if (dist_to_exit <= 3) {
+                            exit_safe = false;
+                            break;
+                        }
+                    }
+                }
+                
+                // 如果这个出口安全，瓶颈就不那么危险
+                if (exit_safe) {
+                    is_bottleneck = false;
+                    break;
+                }
             }
-        }
-        if (sy == 15 && sx == 14)
-        {
-            const int t = mp2[15][28 - fx];
-            flag = true;
-            if (t == -5 || t == -6 || t == -7)
-            {
-                return -1000;
-            }
-        }
-        if (sy == 15 && sx == 26)
-        {
-            const int t = mp2[15][52 - fx];
-            flag = true;
-            if (t == -5 || t == -6 || t == -7)
-            {
-                return -1000;
+            
+            // 如果是危险瓶颈(所有出口都不安全或没有出口)
+            if (is_bottleneck) {
+                // 危险程度取决于周围墙的数量和危险方向的数量
+                int danger_level = wall_count * 500 + danger_direction_count * 300;
+                score -= danger_level;
+                
+                // 极端情况：完全封闭或无安全出口
+                if (exit_directions.empty() || (wall_count >= 3 && danger_direction_count >= 1)) {
+                    return -2000; // 极度危险，几乎确定死亡
+                }
             }
         }
         
@@ -748,12 +772,12 @@ namespace Strategy
         const int timeRest = state.remaining_ticks;
         
         // 处理陷阱的情况
-        if (mp[sy][sx] == -2 && !flag)
+        if (mp[sy][sx] == -2 && !is_bottleneck) // 只有当不是瓶颈时才考虑陷阱
         {
             // 使用专门的陷阱评估函数
             score = evaluateTrap(state, sy, sx);
         }
-        else if (mp[sy][sx] == -2 && flag && mp2[sy][sx] != -5 && mp2[sy][sx] != -6 && mp2[sy][sx] != -7)
+        else if (mp[sy][sx] == -2 && is_bottleneck && mp2[sy][sx] != -5 && mp2[sy][sx] != -6 && mp2[sy][sx] != -7)
         {
             // 拐角陷阱，但非紧急情况
             score = -500; // 非紧急情况下尽量避免
