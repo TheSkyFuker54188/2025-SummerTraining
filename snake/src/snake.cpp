@@ -575,6 +575,145 @@ namespace Strategy
     // 前向声明evaluateTrap函数，确保在bfs函数之前可见
     double evaluateTrap(const GameState &state, int trap_y, int trap_x);
 
+    // 检查位置是否在安全区内，并评估收缩风险
+    double checkSafeZoneRisk(const GameState &state, int x, int y) {
+        double score = 0;
+        int current_tick = MAX_TICKS - state.remaining_ticks;
+        int ticks_to_shrink = state.next_shrink_tick - current_tick;
+        
+        // 如果即将收缩（小于20个tick）
+        if (ticks_to_shrink >= 0 && ticks_to_shrink <= 20) {
+            // 检查位置是否在下一个安全区内
+            if (x < state.next_safe_zone.x_min || x > state.next_safe_zone.x_max ||
+                y < state.next_safe_zone.y_min || y > state.next_safe_zone.y_max) {
+                // 安全区外位置价值大幅降低，危险度随收缩时间临近增加
+                if (ticks_to_shrink <= 5) {
+                    // 极度危险，几乎立即放弃
+                    score = -5000;
+                } else if (ticks_to_shrink <= 10) {
+                    // 很危险，强烈避免
+                    score = -3000; 
+                } else {
+                    // 有风险，尽量避免
+                    score = -1000;
+                }
+            }
+        }
+        
+        return score;
+    }
+    
+    // 检查食物是否能及时到达并计算价值
+    double evaluateFoodValue(const GameState &state, int y, int x, int base_value, int distance) {
+        double num = 0;
+        
+        // 根据食物类型和距离评估价值
+        if (base_value > 0) { // 普通食物
+            // 动态评估尸体价值 - 基于距离
+            if (base_value >= 10) {
+                // 极高价值的尸体
+                if (distance <= 6) {
+                    // 非常近的高价值尸体，价值翻倍
+                    num = base_value * 200 + 200;
+                } else if (distance <= 10) {
+                    // 较近的高价值尸体
+                    num = base_value * 120 + 120;
+                } else {
+                    // 远距离高价值尸体，标准价值
+                    num = base_value * 80 + 80;
+                }
+            } else if (base_value >= 5) {
+                // 中等价值的尸体
+                if (distance <= 4) {
+                    // 非常近的中等尸体，价值提高
+                    num = base_value * 100 + 80;
+                } else {
+                    // 标准价值
+                    num = base_value * 70 + 40;
+                }
+            } else if (base_value > 0) {
+                // 普通食物也增加距离差异化处理
+                if (distance <= 3) {
+                    // 非常近的普通食物，提高价值
+                    num = base_value * 45; // 提高50%
+                } else if (distance <= 5) {
+                    // 较近的普通食物，略微提高价值
+                    num = base_value * 35; // 提高约17%
+                } else {
+                    // 远距离普通食物，标准价值
+                    num = base_value * 30;
+                }
+            }
+        } else if (base_value == -1) { // 增长豆
+            // 根据游戏阶段动态调整增长豆价值
+            if (state.remaining_ticks > 180)
+                num = 30; // 早期价值高
+            else if (state.remaining_ticks > 100)
+                num = 20; // 中期价值中等
+            else
+                num = 10; // 后期价值低
+        } else if (base_value == -2) { // 陷阱
+            num = -0.5;
+        }
+        
+        // 根据游戏阶段动态调整普通食物价值
+        if (base_value > 0 && base_value < 5) { // 只处理普通食物
+            // 早期更看重普通食物(避免过分追求增长豆)
+            if (state.remaining_ticks > 180) {
+                num *= 1.2; // 提高20%
+            }
+            // 后期提高所有食物价值(加速得分)
+            else if (state.remaining_ticks < 60) {
+                num *= 1.3; // 提高30%
+            }
+        }
+        
+        // 基于安全区阶段的食物价值动态调整
+        double safeZoneFactor = 1.0;
+        
+        // 安全区因子计算
+        int zone_current_tick = MAX_TICKS - state.remaining_ticks;
+        int zone_ticks_to_shrink = state.next_shrink_tick - zone_current_tick;
+        
+        // 分析当前所处安全区阶段
+        if (zone_current_tick < 80) { 
+            // 早期阶段 - 标准评估
+            safeZoneFactor = 1.0;
+        } else if (zone_current_tick < 160) {
+            // 第一次收缩阶段
+            if (zone_ticks_to_shrink >= 0 && zone_ticks_to_shrink <= 25) {
+                // 即将收缩时，提高下个安全区内食物价值
+                if (x >= state.next_safe_zone.x_min && x <= state.next_safe_zone.x_max &&
+                    y >= state.next_safe_zone.y_min && y <= state.next_safe_zone.y_max) {
+                    safeZoneFactor = 1.3; // 提升30%价值
+                }
+            }
+        } else if (zone_current_tick < 220) {
+            // 第二次收缩阶段
+            if (zone_ticks_to_shrink >= 0 && zone_ticks_to_shrink <= 25) {
+                // 更强烈提升下个安全区内食物价值
+                if (x >= state.next_safe_zone.x_min && x <= state.next_safe_zone.x_max &&
+                    y >= state.next_safe_zone.y_min && y <= state.next_safe_zone.y_max) {
+                    safeZoneFactor = 1.5; // 提升50%价值
+                }
+            }
+        } else {
+            // 最终收缩阶段
+            if (zone_ticks_to_shrink >= 0 && zone_ticks_to_shrink <= 25) {
+                // 最终安全区内食物价值极高
+                if (x >= state.next_safe_zone.x_min && x <= state.next_safe_zone.x_max &&
+                    y >= state.next_safe_zone.y_min && y <= state.next_safe_zone.y_max) {
+                    safeZoneFactor = 2.0; // 提升100%价值
+                }
+            }
+        }
+        
+        // 应用安全区因子
+        num *= safeZoneFactor;
+        
+        return num;
+    }
+
     // 计算其他蛇离某个目标的距离，如果太近就放弃这个地方
     pair<int, int> count(const GameState &state, int y, int x)
     {
@@ -657,30 +796,8 @@ namespace Strategy
     {
         double score = 0;
         
-        // 安全区收缩风险评估
-        int current_tick = MAX_TICKS - state.remaining_ticks;
-        int ticks_to_shrink = state.next_shrink_tick - current_tick;
-        
-        // 如果即将收缩（小于20个tick）
-        if (ticks_to_shrink >= 0 && ticks_to_shrink <= 20)
-        {
-            // 检查位置是否在下一个安全区内
-            if (sx < state.next_safe_zone.x_min || sx > state.next_safe_zone.x_max ||
-                sy < state.next_safe_zone.y_min || sy > state.next_safe_zone.y_max)
-            {
-                // 安全区外位置价值大幅降低，危险度随收缩时间临近增加
-                if (ticks_to_shrink <= 5) {
-                    // 极度危险，几乎立即放弃
-                    score -= 5000;
-                } else if (ticks_to_shrink <= 10) {
-                    // 很危险，强烈避免
-                    score -= 3000; 
-                } else {
-                    // 有风险，尽量避免
-                    score -= 1000;
-                }
-            }
-        }
+        // 安全区收缩风险评估 - 使用新的辅助函数
+        score += checkSafeZoneRisk(state, sx, sy);
         
         // 动态瓶颈区域检测（替换原有硬编码的特殊位置检测）
         bool is_bottleneck = false;
@@ -918,7 +1035,7 @@ namespace Strategy
             
             // 设定视野搜索范围
             double maxLayer = 12;
-            if (timeRest < 50)
+            if (state.remaining_ticks < 50)
             {
                 maxLayer = 10; // 后期减小搜索范围
             }
@@ -930,9 +1047,8 @@ namespace Strategy
             
             // 解析当前位置
             const auto [y, x] = Utils::str2idx(currentState);
-            double num = mp[y][x] * 1.0;
             
-            // 找到对应的物品以检查生命周期
+            // 检查食物可达性
             bool can_reach = true;
             for (const auto &item : state.items) {
                 if (item.pos.y == y && item.pos.x == x) {
@@ -951,7 +1067,7 @@ namespace Strategy
                     }
                     
                     // 2. 然后再检查是否能及时到达
-                                         const auto &snake_head = state.get_self().get_head();
+                    const auto &snake_head = state.get_self().get_head();
                     if (!Utils::canReachFoodInTime(snake_head.y, snake_head.x, item.pos.y, item.pos.x, item.lifetime)) {
                         // 如果不能及时到达，将该食物价值设为0
                         can_reach = false;
@@ -960,122 +1076,16 @@ namespace Strategy
                 }
             }
             
-            // 如果食物无法及时到达，则价值为0
-            if (mp[y][x] != 0 && mp[y][x] != -2 && !can_reach) {
-                num = 0;
-            }
-            // 评估物品价值
-            else if (mp[y][x] > 0) // 普通食物
-            {
-                // 动态评估尸体价值 - 基于距离
-                const auto &snake_head = state.get_self().get_head();
-                int head_dist = abs(snake_head.y - y) + abs(snake_head.x - x);
-                
-                if (mp[y][x] >= 10) {
-                    // 极高价值的尸体
-                    if (head_dist <= 6) {
-                        // 非常近的高价值尸体，价值翻倍
-                        num = mp[y][x] * 200 + 200;
-                    } else if (head_dist <= 10) {
-                        // 较近的高价值尸体
-                        num = mp[y][x] * 120 + 120;
-                    } else {
-                        // 远距离高价值尸体，标准价值
-                        num = mp[y][x] * 80 + 80;
-                    }
-                } else if (mp[y][x] >= 5) {
-                    // 中等价值的尸体
-                    if (head_dist <= 4) {
-                        // 非常近的中等尸体，价值提高
-                        num = mp[y][x] * 100 + 80;
-                    } else {
-                        // 标准价值
-                        num = mp[y][x] * 70 + 40;
-                    }
-                } else if (mp[y][x] > 0) {
-                    // 普通食物也增加距离差异化处理
-                    if (head_dist <= 3) {
-                        // 非常近的普通食物，提高价值
-                        num = mp[y][x] * 45; // 提高50%
-                    } else if (head_dist <= 5) {
-                        // 较近的普通食物，略微提高价值
-                        num = mp[y][x] * 35; // 提高约17%
-                    } else {
-                        // 远距离普通食物，标准价值
-                        num = mp[y][x] * 30;
-                    }
-                }
-            }
-            else if (mp[y][x] == -1) // 增长豆
-            {
-                // 根据游戏阶段动态调整增长豆价值
-                if (state.remaining_ticks > 180)
-                    num = 30; // 早期价值高
-                else if (state.remaining_ticks > 100)
-                    num = 20; // 中期价值中等
-                else
-                    num = 10; // 后期价值低
-            }
+            // 获取食物基础价值
+            int base_value = mp[y][x];
             
-            // 根据游戏阶段动态调整普通食物价值
-            if (mp[y][x] > 0 && mp[y][x] < 5) { // 只处理普通食物
-                // 早期更看重普通食物(避免过分追求增长豆)
-                if (state.remaining_ticks > 180) {
-                    num *= 1.2; // 提高20%
-                }
-                // 后期提高所有食物价值(加速得分)
-                else if (state.remaining_ticks < 60) {
-                    num *= 1.3; // 提高30%
-                }
-            }
+            // 计算到蛇头的距离
+            const auto &snake_head = state.get_self().get_head();
+            int head_dist = abs(snake_head.y - y) + abs(snake_head.x - x);
             
-            else if (mp[y][x] == -2) // 陷阱
-            {
-                num = -0.5;
-            }
-            
-            // 基于安全区阶段的食物价值动态调整
-            double safeZoneFactor = 1.0;
-            
-            // 安全区因子计算
-            int zone_current_tick = MAX_TICKS - state.remaining_ticks;
-            int zone_ticks_to_shrink = state.next_shrink_tick - zone_current_tick;
-            
-            // 分析当前所处安全区阶段
-            if (zone_current_tick < 80) { 
-                // 早期阶段 - 标准评估
-                safeZoneFactor = 1.0;
-            } else if (zone_current_tick < 160) {
-                // 第一次收缩阶段
-                if (zone_ticks_to_shrink >= 0 && zone_ticks_to_shrink <= 25) {
-                    // 即将收缩时，提高下个安全区内食物价值
-                    if (x >= state.next_safe_zone.x_min && x <= state.next_safe_zone.x_max &&
-                        y >= state.next_safe_zone.y_min && y <= state.next_safe_zone.y_max) {
-                        safeZoneFactor = 1.3; // 提升30%价值
-                    }
-                }
-            } else if (zone_current_tick < 220) {
-                // 第二次收缩阶段
-                if (zone_ticks_to_shrink >= 0 && zone_ticks_to_shrink <= 25) {
-                    // 更强烈提升下个安全区内食物价值
-                    if (x >= state.next_safe_zone.x_min && x <= state.next_safe_zone.x_max &&
-                        y >= state.next_safe_zone.y_min && y <= state.next_safe_zone.y_max) {
-                        safeZoneFactor = 1.5; // 提升50%价值
-                    }
-                }
-            } else {
-                // 最终收缩阶段
-                if (zone_ticks_to_shrink >= 0 && zone_ticks_to_shrink <= 25) {
-                    // 最终安全区内食物价值极高
-                    if (x >= state.next_safe_zone.x_min && x <= state.next_safe_zone.x_max &&
-                        y >= state.next_safe_zone.y_min && y <= state.next_safe_zone.y_max) {
-                        safeZoneFactor = 2.0; // 提升100%价值
-                    }
-                }
-            }
-            
-            // 应用安全区因子
-            num *= safeZoneFactor;
+            // 使用新的辅助函数评估食物价值
+            double num = (mp[y][x] != 0 && mp[y][x] != -2 && !can_reach) ? 0 : 
+                        evaluateFoodValue(state, y, x, base_value, head_dist);
             
             // 计算位置权重
             double weight;
