@@ -1,81 +1,4 @@
-# 蛇的安全性分批次优化方案
-
-根据对 `snake.cpp`特殊区域检测系统的分析，以下是分批次的优化方案，每批次只针对一个功能进行改进。
-
-## 批次1: 动态瓶颈区域检测系统
-
-**目标**: 替代现有硬编码的四个关口检测，实现通用的瓶颈区域识别。
-
-**代码改动**:
-
-```cpp
-// 在Strategy::bfs函数中，替换现有的特殊位置硬编码检测(707-744行)
-
-// 动态瓶颈区域检测
-bool is_bottleneck = false;
-int wall_count = 0;
-int danger_direction_count = 0;
-vector<pair<int, int>> exit_directions;
-
-// 检查周围有多少墙或障碍物
-for (auto dir : validDirections) {
-    const auto [ny, nx] = Utils::nextPos({sy, sx}, dir);
-    if (!Utils::boundCheck(ny, nx) || mp[ny][nx] == -4) {
-        wall_count++; // 墙或边界
-    } else if (mp2[ny][nx] == -5) {
-        wall_count++; // 蛇身体部分，完全阻挡
-    } else if (mp2[ny][nx] == -6 || mp2[ny][nx] == -7) {
-        danger_direction_count++; // 危险方向（蛇头/尾可能移动区域）
-    } else {
-        // 记录可能的出口方向
-        exit_directions.push_back({ny, nx});
-    }
-}
-
-// 如果周围有大量障碍，且可移动方向很少，视为瓶颈
-if (wall_count >= 2 && exit_directions.size() <= 2) {
-    is_bottleneck = true;
-  
-    // 检查出口方向是否安全
-    for (const auto& [exit_y, exit_x] : exit_directions) {
-        bool exit_safe = true;
-      
-        // 检查这个出口附近是否有敌方蛇
-        for (const auto &snake : state.snakes) {
-            if (snake.id != MYID && snake.id != -1) {
-                const Point &enemy_head = snake.get_head();
-                int dist_to_exit = abs(enemy_head.y - exit_y) + abs(enemy_head.x - exit_x);
-              
-                // 如果敌方蛇距离出口很近，这个出口不安全
-                if (dist_to_exit <= 3) {
-                    exit_safe = false;
-                    break;
-                }
-            }
-        }
-      
-        // 如果这个出口安全，瓶颈就不那么危险
-        if (exit_safe) {
-            is_bottleneck = false;
-            break;
-        }
-    }
-  
-    // 如果是危险瓶颈(所有出口都不安全或没有出口)
-    if (is_bottleneck) {
-        // 危险程度取决于周围墙的数量和危险方向的数量
-        int danger_level = wall_count * 500 + danger_direction_count * 300;
-        score -= danger_level;
-      
-        // 极端情况：完全封闭或无安全出口
-        if (exit_directions.empty() || (wall_count >= 3 && danger_direction_count >= 1)) {
-            return -2000; // 极度危险，几乎确定死亡
-        }
-    }
-}
-```
-
-## 批次2: 死胡同检测与评估
+# 批次2: 死胡同检测与评估
 
 **目标**: 识别死胡同和可能导致蛇被困的区域，避免蛇陷入无法脱身的局面。
 
@@ -105,7 +28,7 @@ if (Utils::boundCheck(sy, sx)) {
     // 判断是否为潜在死胡同入口
     if ((horizontal_walls == 2 && vertical_walls >= 1) || 
         (vertical_walls == 2 && horizontal_walls >= 1)) {
-      
+    
         // 确定死胡同的方向
         int open_dir_y = 0, open_dir_x = 0;
         if (horizontal_walls < 2) {
@@ -117,48 +40,48 @@ if (Utils::boundCheck(sy, sx)) {
             open_dir_y = (!Utils::boundCheck(sy-1, sx) || mp[sy-1][sx] == -4 || mp2[sy-1][sx] == -5) ? 1 : -1;
             open_dir_x = 0;
         }
-      
+    
         // 沿着开放方向探测死胡同深度
         int depth = 1;
         int curr_y = sy + open_dir_y;
         int curr_x = sx + open_dir_x;
-      
+    
         // 最多探测8格深度
         while (depth < 8 && Utils::boundCheck(curr_y, curr_x) &&
                mp[curr_y][curr_x] != -4 && mp2[curr_y][curr_x] != -5) {
-          
+        
             // 检查当前位置是否形成新的出口
             int exits = 0;
             for (auto dir : validDirections) {
                 const auto [next_y, next_x] = Utils::nextPos({curr_y, curr_x}, dir);
-              
+            
                 // 跳过来时的方向
                 if (next_y == curr_y - open_dir_y && next_x == curr_x - open_dir_x) continue;
-              
+            
                 // 检查是否是有效出口
                 if (Utils::boundCheck(next_y, next_x) && 
                     mp[next_y][next_x] != -4 && mp2[next_y][next_x] != -5) {
                     exits++;
                 }
             }
-          
+        
             // 如果找到新出口，这不是死胡同
             if (exits > 0) {
                 depth = 0; // 重置深度，表示不是死胡同
                 break;
             }
-          
+        
             // 继续沿当前方向探索
             depth++;
             curr_y += open_dir_y;
             curr_x += open_dir_x;
         }
-      
+    
         // 如果深度大于等于蛇的长度的一半，可能会被困住
         if (depth > 0) {
             is_dead_end = true;
             max_depth = depth;
-          
+        
             // 检查我的蛇长度，如果死胡同太短可能被困
             int my_length = 0;
             for (const auto &snake : state.snakes) {
@@ -167,11 +90,11 @@ if (Utils::boundCheck(sy, sx)) {
                     break;
                 }
             }
-          
+        
             // 如果死胡同深度小于蛇长度的一半，可能无法调头
             if (max_depth < my_length / 2) {
                 score -= (my_length / 2 - max_depth) * 400; // 惩罚分数
-              
+            
                 // 极短死胡同且蛇较长时，给予极高惩罚
                 if (max_depth <= 2 && my_length >= 8) {
                     return -1800; // 几乎必死
@@ -223,7 +146,7 @@ if (ticks_to_shrink >= 0 && ticks_to_shrink <= 20) {
     // 检查位置是否在下一个安全区内
     if (sx < state.next_safe_zone.x_min || sx > state.next_safe_zone.x_max ||
         sy < state.next_safe_zone.y_min || sy > state.next_safe_zone.y_max) {
-      
+    
         // 安全区外位置价值大幅降低，危险度随收缩时间临近增加
         if (ticks_to_shrink <= 5) {
             // 极度危险，几乎立即放弃
@@ -243,7 +166,7 @@ if (ticks_to_shrink >= 0 && ticks_to_shrink <= 20) {
         near_shrink_boundary = true;
         boundary_danger = 200.0 * (4 - dist_to_next_boundary); // 最高600，最低200
         score -= boundary_danger;
-      
+    
         // 检查是否是收缩后形成的瓶颈
         int wall_or_danger_count = 0;
         for (auto dir : validDirections) {
@@ -256,7 +179,7 @@ if (ticks_to_shrink >= 0 && ticks_to_shrink <= 20) {
                 wall_or_danger_count++;
             }
         }
-      
+    
         // 如果收缩会导致这里变成死胡同或极度受限区域
         if (wall_or_danger_count >= 3) {
             score -= 1500; // 收缩后将形成极度危险区域
@@ -296,11 +219,11 @@ namespace Utils {
     int distanceToNearestTurningPoint(int x) {
         int mod = x % 20;
         if (mod == 3) return 0; // 已在转弯点
-      
+    
         // 计算到前后两个转弯点的距离
         int dist_forward = (mod < 3) ? (3 - mod) : (23 - mod);
         int dist_backward = (mod > 3) ? (mod - 3) : (mod + 17);
-      
+    
         return min(dist_forward, dist_backward);
     }
 }
@@ -333,7 +256,7 @@ double eval(const GameState &state, int y, int x, int fy, int fx)
     // 查找当前评估点附近的最高价值目标
     for (const auto &item : state.items) {
         if (item.value <= 0) continue; // 跳过非正价值物品
-      
+    
         int dist = abs(y - item.pos.y) + abs(x - item.pos.x);
         if (dist <= 5) { // 只考虑附近的目标
             double adjusted_value = item.value * (6.0 - dist); // 距离越近价值越高
@@ -348,7 +271,7 @@ double eval(const GameState &state, int y, int x, int fy, int fx)
     // 如果找到了目标，分析是否需要转向
     if (target_x != -1 && target_y != -1) {
         Direction target_direction;
-      
+    
         // 确定到目标的主要方向
         if (abs(x - target_x) > abs(y - target_y)) {
             // 水平方向为主
@@ -357,18 +280,18 @@ double eval(const GameState &state, int y, int x, int fy, int fx)
             // 垂直方向为主
             target_direction = (y < target_y) ? Direction::DOWN : Direction::UP;
         }
-      
+    
         // 如果需要转向但不在转弯点
         if (current_direction != target_direction) {
             needs_turn = true;
-          
+        
             // 检查当前位置是否可以转弯
             bool can_turn_here = Utils::isTurningPoint(x);
-          
+        
             if (!can_turn_here) {
                 // 计算到最近转弯点的距离
                 int dist_to_turn = Utils::distanceToNearestTurningPoint(x);
-              
+            
                 // 根据转弯难度调整评分
                 if (dist_to_turn >= 4) {
                     // 转弯点太远，可能错过目标
@@ -377,11 +300,11 @@ double eval(const GameState &state, int y, int x, int fy, int fx)
                     // 轻微惩罚
                     score -= dist_to_turn * 50;
                 }
-              
+            
                 // 特别处理：如果这一步会导致错过转弯点且需要转弯去追高价值目标
                 if (current_direction == Direction::LEFT || current_direction == Direction::RIGHT) {
                     int next_x = (current_direction == Direction::RIGHT) ? x + 1 : x - 1;
-                  
+                
                     // 检查当前位置是否比下一步更接近转弯点
                     if (Utils::distanceToNearestTurningPoint(x) < Utils::distanceToNearestTurningPoint(next_x) &&
                         highest_value >= 8.0) { // 高价值目标
@@ -432,7 +355,7 @@ if (!self.has_key) {
 if (!state.chests.empty() && !state.get_self().has_key) {
     for (const auto &chest : state.chests) {
         int dist_to_chest = abs(sy - chest.pos.y) + abs(sx - chest.pos.x);
-      
+    
         // 距离宝箱越近风险越高
         if (dist_to_chest <= 3) {
             // 直接接触宝箱是致命的
@@ -459,7 +382,7 @@ if (!state.chests.empty() && !state.get_self().has_key) {
 if (!state.chests.empty() && state.get_self().has_key) {
     for (const auto &chest : state.chests) {
         int dist_to_chest = abs(sy - chest.pos.y) + abs(sx - chest.pos.x);
-      
+    
         // 接近宝箱有额外奖励
         if (dist_to_chest <= 5) {
             // 靠近宝箱奖励递增

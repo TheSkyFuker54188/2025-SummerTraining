@@ -767,6 +767,103 @@ namespace Strategy
             }
         }
         
+        // 死胡同检测
+        bool is_dead_end = false;
+        int max_depth = 0;  // 死胡同的深度
+        
+        // 简单的方向性检查 - 判断该点周围空间结构
+        if (Utils::boundCheck(sy, sx)) {
+            // 检查上下左右四个方向的墙体数量
+            int horizontal_walls = 0;
+            int vertical_walls = 0;
+            
+            // 左右方向
+            if (!Utils::boundCheck(sy, sx-1) || mp[sy][sx-1] == -4 || mp2[sy][sx-1] == -5) horizontal_walls++;
+            if (!Utils::boundCheck(sy, sx+1) || mp[sy][sx+1] == -4 || mp2[sy][sx+1] == -5) horizontal_walls++;
+            
+            // 上下方向
+            if (!Utils::boundCheck(sy-1, sx) || mp[sy-1][sx] == -4 || mp2[sy-1][sx] == -5) vertical_walls++;
+            if (!Utils::boundCheck(sy+1, sx) || mp[sy+1][sx] == -4 || mp2[sy+1][sx] == -5) vertical_walls++;
+            
+            // 判断是否为潜在死胡同入口
+            if ((horizontal_walls == 2 && vertical_walls >= 1) || 
+                (vertical_walls == 2 && horizontal_walls >= 1)) {
+                
+                // 确定死胡同的方向
+                int open_dir_y = 0, open_dir_x = 0;
+                if (horizontal_walls < 2) {
+                    // 水平方向开放
+                    open_dir_y = 0;
+                    open_dir_x = (!Utils::boundCheck(sy, sx-1) || mp[sy][sx-1] == -4 || mp2[sy][sx-1] == -5) ? 1 : -1;
+                } else {
+                    // 垂直方向开放
+                    open_dir_y = (!Utils::boundCheck(sy-1, sx) || mp[sy-1][sx] == -4 || mp2[sy-1][sx] == -5) ? 1 : -1;
+                    open_dir_x = 0;
+                }
+                
+                // 沿着开放方向探测死胡同深度
+                int depth = 1;
+                int curr_y = sy + open_dir_y;
+                int curr_x = sx + open_dir_x;
+                
+                // 最多探测8格深度
+                while (depth < 8 && Utils::boundCheck(curr_y, curr_x) &&
+                       mp[curr_y][curr_x] != -4 && mp2[curr_y][curr_x] != -5) {
+                    
+                    // 检查当前位置是否形成新的出口
+                    int exits = 0;
+                    for (auto dir : validDirections) {
+                        const auto [next_y, next_x] = Utils::nextPos({curr_y, curr_x}, dir);
+                        
+                        // 跳过来时的方向
+                        if (next_y == curr_y - open_dir_y && next_x == curr_x - open_dir_x) continue;
+                        
+                        // 检查是否是有效出口
+                        if (Utils::boundCheck(next_y, next_x) && 
+                            mp[next_y][next_x] != -4 && mp2[next_y][next_x] != -5) {
+                            exits++;
+                        }
+                    }
+                    
+                    // 如果找到新出口，这不是死胡同
+                    if (exits > 0) {
+                        depth = 0; // 重置深度，表示不是死胡同
+                        break;
+                    }
+                    
+                    // 继续沿当前方向探索
+                    depth++;
+                    curr_y += open_dir_y;
+                    curr_x += open_dir_x;
+                }
+                
+                // 如果深度大于等于蛇的长度的一半，可能会被困住
+                if (depth > 0) {
+                    is_dead_end = true;
+                    max_depth = depth;
+                    
+                    // 检查我的蛇长度，如果死胡同太短可能被困
+                    int my_length = 0;
+                    for (const auto &snake : state.snakes) {
+                        if (snake.id == MYID) {
+                            my_length = snake.length;
+                            break;
+                        }
+                    }
+                    
+                    // 如果死胡同深度小于蛇长度的一半，可能无法调头
+                    if (max_depth < my_length / 2) {
+                        score -= (my_length / 2 - max_depth) * 400; // 惩罚分数
+                        
+                        // 极短死胡同且蛇较长时，给予极高惩罚
+                        if (max_depth <= 2 && my_length >= 8) {
+                            return -1800; // 几乎必死
+                        }
+                    }
+                }
+            }
+        }
+        
         // 游戏后期向中心靠拢的策略
         const double start = 150, end = 25, maxNum2 = 30;
         const int timeRest = state.remaining_ticks;
