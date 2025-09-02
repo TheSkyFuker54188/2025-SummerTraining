@@ -1140,10 +1140,10 @@ namespace Strategy
                 int self_distance = abs(self_head.y - y) + abs(self_head.x - x);
                 
                 // 检查其他蛇与目标的距离关系
-                    for (const auto &snake : state.snakes) {
-                        if (snake.id != MYID && snake.id != -1) {
-                            int dist = abs(snake.get_head().y - y) + abs(snake.get_head().x - x);
-                        
+                for (const auto &snake : state.snakes) {
+                    if (snake.id != MYID && snake.id != -1) {
+                        int dist = abs(snake.get_head().y - y) + abs(snake.get_head().x - x);
+                    
                         // 如果敌方蛇更近，竞争系数降低
                         if (dist < self_distance) {
                             // 对高价值尸体的竞争调整
@@ -1225,71 +1225,94 @@ namespace Strategy
         return score;
     }
 
-    // 拐角评估函数 - 检查是否进入了特殊拐角位置
+    // 动态拐角检测函数，替换原有的硬编码版本
     int cornerEval(int y, int x, int fy, int fx)
     {
-        // 从 fx fy 走到 x, y
-        // 首先判断是否是corner
-        string target = Utils::idx2str({y, x});
-        unordered_set<string> corners = {"0917", "1018", "1015", "1116", "1214", "1315",
-                                         "0923", "1022", "1025", "1124", "1226", "1325",
-                                         "1814", "1715", "2015", "1916", "2117", "2018",
-                                         "2123", "2022", "2025", "1924", "1826", "1725"};
-        if (corners.count(target) == 0)
-        {
+        // 如果坐标无效，立即返回
+        if (!Utils::boundCheck(y, x)) {
+            return -10000;
+        }
+      
+        // 统计周围墙体和障碍物的分布
+        int wall_count = 0;
+        vector<pair<int, int>> adjacent_cells;
+        vector<Direction> possible_exits;
+      
+        // 检查四个方向
+        for (auto dir : validDirections) {
+            const auto [ny, nx] = Utils::nextPos({y, x}, dir);
+            if (!Utils::boundCheck(ny, nx) || mp[ny][nx] == -4 || mp2[ny][nx] == -5) {
+                // 墙或蛇身
+                wall_count++;
+            } else {
+                adjacent_cells.push_back({ny, nx});
+                possible_exits.push_back(dir);
+            }
+        }
+      
+        // 拐角定义: 正好有两个墙，且两个墙相邻(形成直角)
+        if (wall_count != 2 || adjacent_cells.size() != 2) {
             return -10000; // 不是拐角
         }
-        
-        // 检查墙体情况，确定拐角类型
-        int checkWall = 0, qx, qy;
-        if (mp[y - 1][x] == -4 || y - 1 == fy)
-        {
-            // 上面是墙
-            checkWall += 100;
+      
+        // 确认墙是否相邻形成直角(两墙不在对角线上)
+        bool is_diagonal = true;
+        if (possible_exits.size() == 2) {
+            // 检查剩余出口是否是对角线方向
+            if ((possible_exits[0] == Direction::UP && possible_exits[1] == Direction::DOWN) ||
+                (possible_exits[0] == Direction::DOWN && possible_exits[1] == Direction::UP) ||
+                (possible_exits[0] == Direction::LEFT && possible_exits[1] == Direction::RIGHT) ||
+                (possible_exits[0] == Direction::RIGHT && possible_exits[1] == Direction::LEFT)) {
+                is_diagonal = false; // 出口在对角线方向
+            }
         }
-        if (mp[y + 1][x] == -4 || y + 1 == fy)
-        {
-            checkWall -= 100;
+      
+        if (!is_diagonal) {
+            return -10000; // 不是典型的L型拐角
         }
-        if (mp[y][x - 1] == -4 || x - 1 == fx)
-        {
-            checkWall += 1;
-        }
-        if (mp[y][x + 1] == -4 || x + 1 == fx)
-        {
-            checkWall -= 1;
-        }
-        
-        // 根据墙的位置确定下一个必须移动的方向
-        switch (checkWall)
-        {
-        case 1:
-            qx = x + 1;
-            qy = y;
+      
+        // 找出拐角的出口方向(两个相邻的开放方向)
+        // 我们需要计算下一步会被迫走向哪个方向
+        int next_y = -1, next_x = -1;
+      
+        // 确定进入拐角的方向
+        Direction entry_dir;
+        if (fy < y) entry_dir = Direction::UP;
+        else if (fy > y) entry_dir = Direction::DOWN;
+        else if (fx < x) entry_dir = Direction::LEFT;
+        else entry_dir = Direction::RIGHT;
+      
+        // 确定出口方向(与入口不同的方向)
+        for (auto dir : possible_exits) {
+            // 不能往回走，所以出口不能是入口方向的反方向
+            if ((entry_dir == Direction::UP && dir == Direction::DOWN) ||
+                (entry_dir == Direction::DOWN && dir == Direction::UP) ||
+                (entry_dir == Direction::LEFT && dir == Direction::RIGHT) ||
+                (entry_dir == Direction::RIGHT && dir == Direction::LEFT)) {
+                continue;
+            }
+          
+            // 找到可能的出口
+            const auto [ny, nx] = Utils::nextPos({y, x}, dir);
+            next_y = ny;
+            next_x = nx;
             break;
-        case -1:
-            qx = x - 1;
-            qy = y;
-            break;
-        case 100:
-            qx = x;
-            qy = y + 1;
-            break;
-        default:
-            qx = x;
-            qy = y - 1;
-            break;
         }
-        
-        // 检查下一个位置是否安全
-        if (mp2[qy][qx] == -5 || mp2[qy][qx] == -6)
-        {
-            return -5000; // 危险拐角
+      
+        // 如果没找到有效出口，说明这是死胡同
+        if (next_y == -1 || next_x == -1) {
+            return -10000; // 不是标准拐角，可能是死胡同
         }
-        if (mp[qy][qx] == -2)
-        {
-            return -50; // 修改为负值，表示有陷阱的拐角不好
+      
+        // 检查出口位置的安全性
+        if (mp2[next_y][next_x] == -5 || mp2[next_y][next_x] == -6) {
+            return -5000; // 危险拐角：出口处有蛇身或蛇头威胁区域
         }
+      
+        if (mp[next_y][next_x] == -2) {
+            return -50; // 陷阱拐角：出口处有陷阱
+        }
+      
         return 0; // 安全拐角
     }
     
@@ -1299,7 +1322,7 @@ namespace Strategy
         (void)trap_y;
         (void)trap_x;
         
-    const auto &self = state.get_self();
+        const auto &self = state.get_self();
         
         // 基础分：默认陷阱非常危险
         double score = -1000;
