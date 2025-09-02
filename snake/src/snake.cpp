@@ -98,6 +98,7 @@ namespace Strategy {
     };
     TargetEvaluation evaluateTarget(const GameState &state, const Point &target_pos, double base_value, bool is_chest);
     struct DeadEndAnalysis;
+    struct TerrainAnalysis;
 }
 
 namespace Utils
@@ -615,6 +616,140 @@ namespace Strategy
     // 前向声明evaluateTrap函数，确保在bfs函数之前可见
     double evaluateTrap(const GameState &state, int trap_y, int trap_x);
 
+    // 地形分析结构体，用于评估死胡同和瓶颈
+    struct TerrainAnalysis {
+        bool is_dead_end;      // 是否是死胡同
+        bool is_bottleneck;    // 是否是瓶颈
+        int exit_count;        // 出口数量
+        double risk_score;     // 风险评分
+        int depth;             // 空间深度
+
+        // 默认构造函数
+        TerrainAnalysis() : is_dead_end(false), is_bottleneck(false), 
+                          exit_count(0), risk_score(0), depth(0) {}
+    };
+
+    // 检查敌方蛇是否在指定区域附近
+    bool checkEnemyNearArea(const GameState &state, const unordered_set<string>& area, int max_distance = 3) {
+        for (const auto &snake : state.snakes) {
+            if (snake.id != MYID && snake.id != -1) {
+                const Point &enemy_head = snake.get_head();
+                
+                // 检查敌方蛇头是否靠近区域中的任何点
+                for (const auto &point_str : area) {
+                    auto point = Utils::str2idx(point_str);
+                    int dist = abs(enemy_head.y - point.first) + abs(enemy_head.x - point.second);
+                    if (dist <= max_distance) {
+                        return true; // 发现敌方蛇在附近
+                    }
+                }
+            }
+        }
+        return false; // 区域附近没有敌方蛇
+    }
+
+    // 分析地形风险，识别死胡同和瓶颈
+    TerrainAnalysis analyzeTerrainRisk(const GameState &state, int y, int x) {
+        TerrainAnalysis result;
+        
+        // 使用广度优先搜索，分析可到达区域的拓扑结构
+        unordered_set<string> visited;
+        queue<pair<pair<int, int>, int>> q; // 位置和距离
+        q.push({{y, x}, 0});
+        visited.insert(Utils::idx2str({y, x}));
+        
+        // 记录深度方向拓展和宽度方向拓展
+        int max_depth = 0;
+        int max_width = 0;
+        int bottleneck_width = INT_MAX;
+        vector<vector<int>> reachable(MAXM, vector<int>(MAXN, -1));
+        
+        // 执行BFS
+        while (!q.empty()) {
+            auto [pos, depth] = q.front();
+            q.pop();
+            
+            max_depth = max(max_depth, depth);
+            reachable[pos.first][pos.second] = depth;
+            
+            // 检查四个方向
+            for (auto dir : validDirections) {
+                const auto [ny, nx] = Utils::nextPos(pos, dir);
+                
+                // 检查是否越界或者是障碍物
+                if (!Utils::boundCheck(ny, nx) || mp[ny][nx] == -4 || mp2[ny][nx] == -5) {
+                    continue;
+                }
+                
+                string next = Utils::idx2str({ny, nx});
+                if (visited.find(next) == visited.end()) {
+                    visited.insert(next);
+                    q.push({{ny, nx}, depth + 1});
+                }
+            }
+        }
+        
+        // 统计每个深度的宽度
+        vector<int> width_at_depth(max_depth + 1, 0);
+        for (int i = 0; i < MAXM; i++) {
+            for (int j = 0; j < MAXN; j++) {
+                if (reachable[i][j] >= 0) {
+                    width_at_depth[reachable[i][j]]++;
+                }
+            }
+        }
+        
+        // 计算最大宽度和瓶颈宽度
+        for (int d = 0; d <= max_depth; d++) {
+            max_width = max(max_width, width_at_depth[d]);
+            if (width_at_depth[d] > 0) {
+                bottleneck_width = min(bottleneck_width, width_at_depth[d]);
+            }
+        }
+        
+        // 分析结果
+        result.exit_count = visited.size();
+        result.depth = max_depth;
+        
+        // 检测死胡同：深度大于宽度且空间有限
+        if (max_depth > 3 && max_width < 3 && visited.size() < 12) {
+            result.is_dead_end = true;
+            result.risk_score -= 800;
+            
+            // 获取蛇长度，评估是否能在死胡同中调头
+            int my_length = 0;
+            for (const auto &snake : state.snakes) {
+                if (snake.id == MYID) {
+                    my_length = snake.length;
+                    break;
+                }
+            }
+            
+            // 如果死胡同太窄不能调头，进一步增加风险
+            if (my_length > max_width * 2) {
+                result.risk_score -= 1000;
+                
+                // 极短死胡同且蛇较长时，给予极高惩罚
+                if (max_depth <= 2 && my_length >= 8) {
+                    result.risk_score = -1800; // 几乎必死
+                }
+            }
+        }
+        
+        // 检测瓶颈：有收缩点且收缩点宽度小
+        if (bottleneck_width <= 2 && max_width > 3) {
+            result.is_bottleneck = true;
+            result.risk_score -= 300 * (4 - bottleneck_width);
+            
+            // 检查瓶颈附近是否有其他蛇
+            if (checkEnemyNearArea(state, visited, 3)) {
+                result.risk_score -= 500;
+            }
+        }
+        
+        return result;
+    }
+
     // 死胡同分析结构体
     struct DeadEndAnalysis {
         bool is_dead_end;
@@ -624,69 +759,15 @@ namespace Strategy
 
     // 分析位置是否为死胡同
     DeadEndAnalysis analyzeDeadEnd(const GameState &state, int y, int x) {
-        DeadEndAnalysis result = {false, 0, 0};
-      
-        // 使用简单的方向性floodfill算法检测死胡同
-        unordered_set<string> visited;
-        queue<pair<pair<int, int>, int>> q; // 位置和深度
-        q.push({{y, x}, 0});
-        visited.insert(Utils::idx2str({y, x}));
-      
-        int max_depth = 0;
-      
-        while (!q.empty()) {
-            auto [pos, depth] = q.front();
-            q.pop();
-          
-            max_depth = max(max_depth, depth);
-          
-            // 检查四个方向
-            for (auto dir : validDirections) {
-                const auto [ny, nx] = Utils::nextPos(pos, dir);
-              
-                // 检查是否越界或者是障碍物
-                if (!Utils::boundCheck(ny, nx) || mp[ny][nx] == -4 || mp2[ny][nx] == -5) {
-                    continue;
-                }
-              
-                string next = Utils::idx2str({ny, nx});
-                if (visited.find(next) == visited.end()) {
-                    visited.insert(next);
-                    q.push({{ny, nx}, depth + 1});
-                  
-                    // 如果找到三个以上不同的方向可走，不是死胡同
-                    if (visited.size() > 8) {
-                        return {false, 0, 0}; // 空间足够大，不是死胡同
-                    }
-                }
-            }
-        }
-      
-        // 如果可访问区域小，且通路狭窄，认为是死胡同
-        if (visited.size() <= 8 && max_depth >= 2) {
-            result.is_dead_end = true;
-            result.depth = max_depth;
-          
-            // 计算风险分数
-            int my_length = 0;
-            for (const auto &snake : state.snakes) {
-                if (snake.id == MYID) {
-                    my_length = snake.length;
-                    break;
-                }
-            }
-          
-            // 如果死胡同深度小于蛇长度的一半，无法调头
-            if (max_depth < my_length / 2) {
-                result.risk_score = -(my_length / 2 - max_depth) * 400;
-              
-                // 极短死胡同且蛇较长时，给予极高惩罚
-                if (max_depth <= 2 && my_length >= 8) {
-                    result.risk_score = -1800; // 几乎必死
-                }
-            }
-        }
-      
+        // 调用新的地形分析函数
+        TerrainAnalysis terrain = analyzeTerrainRisk(state, y, x);
+        
+        // 兼容旧的DeadEndAnalysis结构体
+        DeadEndAnalysis result;
+        result.is_dead_end = terrain.is_dead_end;
+        result.depth = terrain.depth;
+        result.risk_score = terrain.risk_score;
+        
         return result;
     }
 
@@ -977,19 +1058,24 @@ namespace Strategy
             }
         }
         
-        // 死胡同检测 - 使用新的分析函数
-        auto dead_end = analyzeDeadEnd(state, sy, sx);
-        if (dead_end.is_dead_end) {
-            score += dead_end.risk_score;
+        // 使用新的地形风险分析函数替代原有死胡同检测
+        auto terrain_risk = analyzeTerrainRisk(state, sy, sx);
+        
+        // 如果是死胡同或瓶颈，将风险分数添加到总分中
+        score += terrain_risk.risk_score;
+        
+        // 极度危险的地形，提前返回
+        if (terrain_risk.risk_score <= -1800) {
+            return terrain_risk.risk_score; // 直接返回极高风险值
         }
         
         // 处理陷阱的情况
-        if (mp[sy][sx] == -2 && !is_bottleneck) // 只有当不是瓶颈时才考虑陷阱
+        if (mp[sy][sx] == -2 && !terrain_risk.is_bottleneck) // 只有当不是瓶颈时才考虑陷阱
         {
             // 使用专门的陷阱评估函数
             score = evaluateTrap(state, sy, sx);
         }
-        else if (mp[sy][sx] == -2 && is_bottleneck && mp2[sy][sx] != -5 && mp2[sy][sx] != -6 && mp2[sy][sx] != -7)
+        else if (mp[sy][sx] == -2 && terrain_risk.is_bottleneck && mp2[sy][sx] != -5 && mp2[sy][sx] != -6 && mp2[sy][sx] != -7)
         {
             // 拐角陷阱，但非紧急情况
             score = -500; // 非紧急情况下尽量避免
