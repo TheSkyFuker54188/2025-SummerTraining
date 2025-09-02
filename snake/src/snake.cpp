@@ -32,81 +32,7 @@ enum class Direction
 
 const vector<Direction> validDirections{Direction::UP, Direction::DOWN, Direction::LEFT, Direction::RIGHT};
 
-namespace Utils
-{
-    // 检查是否越界
-    bool boundCheck(int y, int x)
-    {
-        return (y >= 0) && (y < MAXM) && (x >= 0) && (x < MAXN);
-    }
-
-    // 获取下一个位置，在 dir 方向上
-    pair<int, int> nextPos(pair<int, int> pos, Direction dir)
-    {
-        switch (dir)
-        {
-        case Direction::LEFT:
-            return make_pair(pos.first, pos.second - 1);
-        case Direction::RIGHT:
-            return make_pair(pos.first, pos.second + 1);
-        case Direction::UP:
-            return make_pair(pos.first - 1, pos.second);
-        default:
-            return make_pair(pos.first + 1, pos.second);
-        }
-    }
-
-    // 将方向转换为数字
-    int dir2num(const Direction dir)
-    {
-        switch (dir)
-        {
-        case Direction::LEFT:
-            return 0;
-        case Direction::UP:
-            return 1;
-        case Direction::RIGHT:
-            return 2;
-        default:
-            return 3;
-        }
-    }
-
-    // 判断食物是否可以及时到达 - 直接使用坐标和生命周期
-    bool canReachFoodInTime(int head_y, int head_x, int food_y, int food_x, int lifetime) 
-    {
-        // 计算曼哈顿距离
-        int dist = abs(head_y - food_y) + abs(head_x - food_x);
-        
-        // 考虑转弯限制，估计实际所需时间
-        // 由于转弯限制，实际路径通常会比曼哈顿距离长
-        int estimated_ticks = dist + dist/5; // 粗略估计：每5步可能需要额外1步用于转弯
-        
-        // 简单判断：如果预计到达时间超过食物剩余生命周期，则忽略该食物
-        return estimated_ticks < lifetime;
-    }
-
-    // 将坐标转化为string (用于拐角检测)
-    string idx2str(const pair<int, int> idx)
-    {
-        string a = to_string(idx.first);
-        if (a.length() == 1)
-            a = "0" + a;
-        string b = to_string(idx.second);
-        if (b.length() == 1)
-            b = "0" + b;
-        return a + b;
-    }
-
-    // 将string转化为坐标
-    pair<int, int> str2idx(const string &str)
-    {
-        string substr1{str[0], str[1]};
-        string substr2{str[2], str[3]};
-        return make_pair(stoi(substr1), stoi(substr2));
-    }
-}
-
+// 将类型定义放到最前面
 struct Point {
   int y, x;
 };
@@ -162,7 +88,125 @@ struct GameState {
   const Snake &get_self() const { return snakes[self_idx]; }
 };
 
-// ===== 移植的主要辅助数据结构 =====
+// 前向声明Strategy命名空间中的结构体和函数
+namespace Strategy {
+    struct TargetEvaluation {
+        Point position;
+        double value;
+        int distance;
+        bool is_safe;
+    };
+    TargetEvaluation evaluateTarget(const GameState &state, const Point &target_pos, double base_value, bool is_chest);
+    struct DeadEndAnalysis;
+}
+
+namespace Utils
+{
+    // 检查是否越界
+    bool boundCheck(int y, int x)
+    {
+        return (y >= 0) && (y < MAXM) && (x >= 0) && (x < MAXN);
+    }
+
+    // 获取下一个位置，在 dir 方向上
+    pair<int, int> nextPos(pair<int, int> pos, Direction dir)
+    {
+        switch (dir)
+        {
+        case Direction::LEFT:
+            return make_pair(pos.first, pos.second - 1);
+        case Direction::RIGHT:
+            return make_pair(pos.first, pos.second + 1);
+        case Direction::UP:
+            return make_pair(pos.first - 1, pos.second);
+        default:
+            return make_pair(pos.first + 1, pos.second);
+        }
+    }
+
+    // 将方向转换为数字
+    int dir2num(const Direction dir)
+    {
+        switch (dir)
+        {
+        case Direction::LEFT:
+            return 0;
+        case Direction::UP:
+            return 1;
+        case Direction::RIGHT:
+            return 2;
+        default:
+            return 3;
+        }
+    }
+
+    // 判断食物是否可以及时到达 - 直接使用坐标和生命周期
+    bool canReachFoodInTime(int head_y, int head_x, int food_y, int food_x, int lifetime) 
+    {
+        // 计算曼哈顿距离
+        int dist = abs(head_y - food_y) + abs(head_x - food_x);
+        
+        // 考虑转弯限制，估计实际所需时间
+        // 由于转弯限制，实际路径通常会比曼哈顿距离长
+        int estimated_ticks = dist + dist/5; // 粗略估计：每5步可能需要额外1步用于转弯
+        
+        // 简单判断：如果预计到达时间超过食物剩余生命周期，则忽略该食物
+        return estimated_ticks < lifetime;
+    }
+
+    // 判断位置是否会因安全区收缩而消失
+    bool willDisappearInShrink(const GameState &state, int x, int y, int look_ahead_ticks = 20) {
+        int current_tick = MAX_TICKS - state.remaining_ticks;
+        int ticks_to_shrink = state.next_shrink_tick - current_tick;
+      
+        if (ticks_to_shrink >= 0 && ticks_to_shrink <= look_ahead_ticks) {
+            if (x < state.next_safe_zone.x_min || x > state.next_safe_zone.x_max ||
+                y < state.next_safe_zone.y_min || y > state.next_safe_zone.y_max) {
+                return true; // 位置将在收缩中消失
+            }
+        }
+      
+        return false; // 位置安全或不会很快收缩
+    }
+
+    // 判断目标是否可达
+    bool isTargetReachable(const GameState &state, const Point &target, int lifetime = INT_MAX) {
+        const auto &head = state.get_self().get_head();
+      
+        // 检查安全区收缩
+        if (willDisappearInShrink(state, target.x, target.y)) {
+            return false;
+        }
+      
+        // 检查能否及时到达
+        if (lifetime < INT_MAX) {
+            return canReachFoodInTime(head.y, head.x, target.y, target.x, lifetime);
+        }
+      
+        return true;
+    }
+
+    // 将坐标转化为string (用于拐角检测)
+    string idx2str(const pair<int, int> idx)
+    {
+        string a = to_string(idx.first);
+        if (a.length() == 1)
+            a = "0" + a;
+        string b = to_string(idx.second);
+        if (b.length() == 1)
+            b = "0" + b;
+        return a + b;
+    }
+
+    // 将string转化为坐标
+    pair<int, int> str2idx(const string &str)
+    {
+        string substr1{str[0], str[1]};
+        string substr2{str[2], str[3]};
+        return make_pair(stoi(substr1), stoi(substr2));
+    }
+}
+
 // 游戏地图状态: mp用于物品, mp2用于蛇的位置
 int mp[MAXM][MAXN], mp2[MAXM][MAXN];
 
@@ -206,30 +250,37 @@ void lock_on_target(const GameState &state) {
       
         // 如果还没有锁定宝箱或宝箱位置已变化，重新锁定宝箱
         if (!is_chest_target || current_target.x == -1 || current_target.y == -1) {
-            // 找到最近的宝箱
-            int min_dist = INT_MAX;
-            const Chest* nearest_chest = nullptr;
+            // 评估所有宝箱
+            Strategy::TargetEvaluation best_chest = {
+                {-1, -1}, // position
+                -1,       // value
+                INT_MAX,  // distance
+                false     // is_safe
+            };
           
             for (const auto &chest : state.chests) {
-                int dist = abs(head.y - chest.pos.y) + abs(head.x - chest.pos.x);
-              
-                if (dist < min_dist) {
-                    min_dist = dist;
-                    nearest_chest = &chest;
+                // 评估宝箱
+                auto eval = Strategy::evaluateTarget(state, chest.pos, chest.score, true);
+                
+                // 选择价值最高且安全的宝箱，或者在没有安全选择时选择价值最高的
+                if (eval.is_safe && (best_chest.position.x == -1 || eval.value > best_chest.value)) {
+                    best_chest = eval;
+                } else if (!best_chest.is_safe && eval.value > best_chest.value) {
+                    best_chest = eval;
                 }
             }
-          
-            // 锁定最近的宝箱
-            if (nearest_chest != nullptr) {
-                current_target = nearest_chest->pos;
-                target_value = nearest_chest->score;
-                target_lock_time = min(min_dist + 10, 30); // 给足够时间去宝箱
+            
+            // 如果找到了合适的宝箱
+            if (best_chest.position.x != -1) {
+                current_target = best_chest.position;
+                target_value = best_chest.value;
+                target_lock_time = min(best_chest.distance + 10, 30); // 给足够时间去宝箱
                 is_chest_target = true;
               
                 // 如果钥匙即将掉落，缩短锁定时间
                 for (const auto &key : state.keys) {
                     if (key.holder_id == MYID) {
-                        if (key.remaining_time < min_dist) {
+                        if (key.remaining_time < best_chest.distance) {
                             // 钥匙可能会在到达宝箱前掉落，调整锁定时间
                             target_lock_time = key.remaining_time - 1;
                         }
@@ -262,45 +313,34 @@ void lock_on_target(const GameState &state) {
       
         // 如果没有锁定钥匙或锁定时间结束，寻找新的钥匙
         if (!is_key_target || target_lock_time <= 0 || current_target.x == -1 || current_target.y == -1) {
-            const Key* best_key = nullptr;
-            int min_dist = INT_MAX;
-          
-            // 查找最近的安全钥匙
+            // 评估所有钥匙
+            Strategy::TargetEvaluation best_key = {
+                {-1, -1}, // position
+                -1,       // value
+                INT_MAX,  // distance
+                false     // is_safe
+            };
+            
             for (const auto &key : state.keys) {
                 // 只考虑地图上的钥匙
                 if (key.holder_id == -1) {
-                    // 检查钥匙是否在安全区内
-                    if (key.pos.x < state.current_safe_zone.x_min || key.pos.x > state.current_safe_zone.x_max ||
-                        key.pos.y < state.current_safe_zone.y_min || key.pos.y > state.current_safe_zone.y_max) {
-                        continue;  // 忽略安全区外的钥匙
-                    }
-                  
-                    // 计算到钥匙的距离
-                    int dist = abs(head.y - key.pos.y) + abs(head.x - key.pos.x);
-                  
-                    // 检查钥匙是否会因安全区收缩而消失
-                    int current_tick = MAX_TICKS - state.remaining_ticks;
-                    int ticks_to_shrink = state.next_shrink_tick - current_tick;
-                  
-                    if (ticks_to_shrink >= 0 && ticks_to_shrink <= 15) {
-                        if (key.pos.x < state.next_safe_zone.x_min || key.pos.x > state.next_safe_zone.x_max ||
-                            key.pos.y < state.next_safe_zone.y_min || key.pos.y > state.next_safe_zone.y_max) {
-                            continue;  // 即将在安全区收缩中消失的钥匙
-                        }
-                    }
-                  
-                    if (dist < min_dist) {
-                        min_dist = dist;
-                        best_key = &key;
+                    // 评估钥匙
+                    auto eval = Strategy::evaluateTarget(state, key.pos, 40.0, false);
+                    
+                    // 选择价值最高且安全的钥匙，或者在没有安全选择时选择价值最高的
+                    if (eval.is_safe && (best_key.position.x == -1 || eval.value > best_key.value)) {
+                        best_key = eval;
+                    } else if (!best_key.is_safe && eval.value > best_key.value) {
+                        best_key = eval;
                     }
                 }
             }
-          
-            // 锁定最近的安全钥匙
-            if (best_key != nullptr) {
-                current_target = best_key->pos;
-                target_value = 40;  // 钥匙的虚拟价值（考虑到宝箱的高价值）
-                target_lock_time = min(min_dist + 5, 20);  // 给予足够的时间去拿钥匙
+            
+            // 如果找到了合适的钥匙
+            if (best_key.position.x != -1) {
+                current_target = best_key.position;
+                target_value = best_key.value;
+                target_lock_time = min(best_key.distance + 5, 20);  // 给予足够的时间去拿钥匙
                 is_key_target = true;
             }
         }
@@ -335,7 +375,7 @@ void lock_on_target(const GameState &state) {
         is_chest_target = false;
     }
   
-    // 检查当前目标是否仍然存在 (普通食物目标)
+    // 检查当前普通食物目标是否仍然存在
     if (!is_key_target && !is_chest_target && current_target.y != -1 && current_target.x != -1) {
         bool target_exists = false;
         for (const auto &item : state.items) {
@@ -469,7 +509,7 @@ unordered_set<Direction> illegalMove(const GameState &state)
     unordered_set<Direction> illegals;
     const Snake &self = state.get_self();
     
-    // 添加紧急模式检测
+    // 本函数会更新紧急模式状态
     bool emergency_mode = false;
     
     // 确定反方向（不能往回走）
@@ -503,10 +543,10 @@ unordered_set<Direction> illegalMove(const GameState &state)
         }
         
         // 安全区检查 - 即使在紧急情况下也不允许离开安全区
-        if (x < state.current_safe_zone.x_min || x > state.current_safe_zone.x_max || 
+        if (x < state.current_safe_zone.x_min || x > state.current_safe_zone.x_max ||
             y < state.current_safe_zone.y_min || y > state.current_safe_zone.y_max) {
-            // 只有当护盾时间足够时才允许离开安全区
-            if (self.shield_time <= 1) {
+                // 只有当护盾时间足够时才允许离开安全区
+                if (self.shield_time <= 1) {
                 return false; // 不合法
             }
         }
@@ -574,6 +614,81 @@ namespace Strategy
 {
     // 前向声明evaluateTrap函数，确保在bfs函数之前可见
     double evaluateTrap(const GameState &state, int trap_y, int trap_x);
+
+    // 死胡同分析结构体
+    struct DeadEndAnalysis {
+        bool is_dead_end;
+        int depth;
+        double risk_score;
+    };
+
+    // 分析位置是否为死胡同
+    DeadEndAnalysis analyzeDeadEnd(const GameState &state, int y, int x) {
+        DeadEndAnalysis result = {false, 0, 0};
+      
+        // 使用简单的方向性floodfill算法检测死胡同
+        unordered_set<string> visited;
+        queue<pair<pair<int, int>, int>> q; // 位置和深度
+        q.push({{y, x}, 0});
+        visited.insert(Utils::idx2str({y, x}));
+      
+        int max_depth = 0;
+      
+        while (!q.empty()) {
+            auto [pos, depth] = q.front();
+            q.pop();
+          
+            max_depth = max(max_depth, depth);
+          
+            // 检查四个方向
+            for (auto dir : validDirections) {
+                const auto [ny, nx] = Utils::nextPos(pos, dir);
+              
+                // 检查是否越界或者是障碍物
+                if (!Utils::boundCheck(ny, nx) || mp[ny][nx] == -4 || mp2[ny][nx] == -5) {
+                    continue;
+                }
+              
+                string next = Utils::idx2str({ny, nx});
+                if (visited.find(next) == visited.end()) {
+                    visited.insert(next);
+                    q.push({{ny, nx}, depth + 1});
+                  
+                    // 如果找到三个以上不同的方向可走，不是死胡同
+                    if (visited.size() > 8) {
+                        return {false, 0, 0}; // 空间足够大，不是死胡同
+                    }
+                }
+            }
+        }
+      
+        // 如果可访问区域小，且通路狭窄，认为是死胡同
+        if (visited.size() <= 8 && max_depth >= 2) {
+            result.is_dead_end = true;
+            result.depth = max_depth;
+          
+            // 计算风险分数
+            int my_length = 0;
+            for (const auto &snake : state.snakes) {
+                if (snake.id == MYID) {
+                    my_length = snake.length;
+                    break;
+                }
+            }
+          
+            // 如果死胡同深度小于蛇长度的一半，无法调头
+            if (max_depth < my_length / 2) {
+                result.risk_score = -(my_length / 2 - max_depth) * 400;
+              
+                // 极短死胡同且蛇较长时，给予极高惩罚
+                if (max_depth <= 2 && my_length >= 8) {
+                    result.risk_score = -1800; // 几乎必死
+                }
+            }
+        }
+      
+        return result;
+    }
 
     // 检查位置是否在安全区内，并评估收缩风险
     double checkSafeZoneRisk(const GameState &state, int x, int y) {
@@ -862,106 +977,11 @@ namespace Strategy
             }
         }
         
-        // 死胡同检测
-        bool is_dead_end = false;
-        int max_depth = 0;  // 死胡同的深度
-        
-        // 简单的方向性检查 - 判断该点周围空间结构
-        if (Utils::boundCheck(sy, sx)) {
-            // 检查上下左右四个方向的墙体数量
-            int horizontal_walls = 0;
-            int vertical_walls = 0;
-            
-            // 左右方向
-            if (!Utils::boundCheck(sy, sx-1) || mp[sy][sx-1] == -4 || mp2[sy][sx-1] == -5) horizontal_walls++;
-            if (!Utils::boundCheck(sy, sx+1) || mp[sy][sx+1] == -4 || mp2[sy][sx+1] == -5) horizontal_walls++;
-            
-            // 上下方向
-            if (!Utils::boundCheck(sy-1, sx) || mp[sy-1][sx] == -4 || mp2[sy-1][sx] == -5) vertical_walls++;
-            if (!Utils::boundCheck(sy+1, sx) || mp[sy+1][sx] == -4 || mp2[sy+1][sx] == -5) vertical_walls++;
-            
-            // 判断是否为潜在死胡同入口
-            if ((horizontal_walls == 2 && vertical_walls >= 1) || 
-                (vertical_walls == 2 && horizontal_walls >= 1)) {
-                
-                // 确定死胡同的方向
-                int open_dir_y = 0, open_dir_x = 0;
-                if (horizontal_walls < 2) {
-                    // 水平方向开放
-                    open_dir_y = 0;
-                    open_dir_x = (!Utils::boundCheck(sy, sx-1) || mp[sy][sx-1] == -4 || mp2[sy][sx-1] == -5) ? 1 : -1;
-                } else {
-                    // 垂直方向开放
-                    open_dir_y = (!Utils::boundCheck(sy-1, sx) || mp[sy-1][sx] == -4 || mp2[sy-1][sx] == -5) ? 1 : -1;
-                    open_dir_x = 0;
-                }
-                
-                // 沿着开放方向探测死胡同深度
-                int depth = 1;
-                int curr_y = sy + open_dir_y;
-                int curr_x = sx + open_dir_x;
-                
-                // 最多探测8格深度
-                while (depth < 8 && Utils::boundCheck(curr_y, curr_x) &&
-                       mp[curr_y][curr_x] != -4 && mp2[curr_y][curr_x] != -5) {
-                    
-                    // 检查当前位置是否形成新的出口
-                    int exits = 0;
-                    for (auto dir : validDirections) {
-                        const auto [next_y, next_x] = Utils::nextPos({curr_y, curr_x}, dir);
-                        
-                        // 跳过来时的方向
-                        if (next_y == curr_y - open_dir_y && next_x == curr_x - open_dir_x) continue;
-                        
-                        // 检查是否是有效出口
-                        if (Utils::boundCheck(next_y, next_x) && 
-                            mp[next_y][next_x] != -4 && mp2[next_y][next_x] != -5) {
-                            exits++;
-                        }
-                    }
-                    
-                    // 如果找到新出口，这不是死胡同
-                    if (exits > 0) {
-                        depth = 0; // 重置深度，表示不是死胡同
-                        break;
-                    }
-                    
-                    // 继续沿当前方向探索
-                    depth++;
-                    curr_y += open_dir_y;
-                    curr_x += open_dir_x;
-                }
-                
-                // 如果深度大于等于蛇的长度的一半，可能会被困住
-                if (depth > 0) {
-                    is_dead_end = true;
-                    max_depth = depth;
-                    
-                    // 检查我的蛇长度，如果死胡同太短可能被困
-                    int my_length = 0;
-                    for (const auto &snake : state.snakes) {
-                        if (snake.id == MYID) {
-                            my_length = snake.length;
-                            break;
-                        }
-                    }
-                    
-                    // 如果死胡同深度小于蛇长度的一半，可能无法调头
-                    if (max_depth < my_length / 2) {
-                        score -= (my_length / 2 - max_depth) * 400; // 惩罚分数
-                        
-                        // 极短死胡同且蛇较长时，给予极高惩罚
-                        if (max_depth <= 2 && my_length >= 8) {
-                            return -1800; // 几乎必死
-                        }
-                    }
-                }
-            }
+        // 死胡同检测 - 使用新的分析函数
+        auto dead_end = analyzeDeadEnd(state, sy, sx);
+        if (dead_end.is_dead_end) {
+            score += dead_end.risk_score;
         }
-        
-        // 游戏后期向中心靠拢的策略
-        const double start = 150, end = 25, maxNum2 = 30;
-        const int timeRest = state.remaining_ticks;
         
         // 处理陷阱的情况
         if (mp[sy][sx] == -2 && !is_bottleneck) // 只有当不是瓶颈时才考虑陷阱
@@ -992,6 +1012,9 @@ namespace Strategy
             if (is_emergency) {
                 score = -100; // 紧急情况下接受陷阱
             }
+            
+            const double start = 150, end = 25, maxNum2 = 30;
+            const int timeRest = state.remaining_ticks;
             
             if (start > timeRest && timeRest >= end)
             {
@@ -1052,24 +1075,8 @@ namespace Strategy
             bool can_reach = true;
             for (const auto &item : state.items) {
                 if (item.pos.y == y && item.pos.x == x) {
-                    // 1. 检查食物是否会因安全区收缩而消失
-                    int food_current_tick = MAX_TICKS - state.remaining_ticks;
-                    int food_ticks_to_shrink = state.next_shrink_tick - food_current_tick;
-                    
-                    // 如果即将收缩(<=20个tick)且食物在下一个安全区外，预计会消失
-                    if (food_ticks_to_shrink >= 0 && food_ticks_to_shrink <= 20) {
-                        if (x < state.next_safe_zone.x_min || x > state.next_safe_zone.x_max ||
-                            y < state.next_safe_zone.y_min || y > state.next_safe_zone.y_max) {
-                            // 食物将消失，将其价值设为0
-                            can_reach = false;
-                            break;
-                        }
-                    }
-                    
-                    // 2. 然后再检查是否能及时到达
-                    const auto &snake_head = state.get_self().get_head();
-                    if (!Utils::canReachFoodInTime(snake_head.y, snake_head.x, item.pos.y, item.pos.x, item.lifetime)) {
-                        // 如果不能及时到达，将该食物价值设为0
+                    // 使用通用的目标可达性检测函数
+                    if (!Utils::isTargetReachable(state, item.pos, item.lifetime)) {
                         can_reach = false;
                         break;
                     }
@@ -1089,8 +1096,6 @@ namespace Strategy
             
             // 计算位置权重
             double weight;
-            //! 目前只存储竞争系数
-            auto [tot, _] = count(state, y, x);  // 使用_表示未使用的变量
             
             // 根据层级分配权重
             switch (layer)
@@ -1135,9 +1140,9 @@ namespace Strategy
                 int self_distance = abs(self_head.y - y) + abs(self_head.x - x);
                 
                 // 检查其他蛇与目标的距离关系
-                for (const auto &snake : state.snakes) {
-                    if (snake.id != MYID && snake.id != -1) {
-                        int dist = abs(snake.get_head().y - y) + abs(snake.get_head().x - x);
+                    for (const auto &snake : state.snakes) {
+                        if (snake.id != MYID && snake.id != -1) {
+                            int dist = abs(snake.get_head().y - y) + abs(snake.get_head().x - x);
                         
                         // 如果敌方蛇更近，竞争系数降低
                         if (dist < self_distance) {
@@ -1356,22 +1361,110 @@ namespace Strategy
         // 整合评分，安全区评分不再包含中心偏好
         return bfs_score + safe_zone_score;
     }
+
+    // 评估目标的价值和安全性
+    TargetEvaluation evaluateTarget(const GameState &state, const Point &target_pos, double base_value, bool is_chest) {
+        const auto &head = state.get_self().get_head();
+        int distance = abs(head.y - target_pos.y) + abs(head.x - target_pos.x);
+      
+        // 基础评估
+        TargetEvaluation result = {
+            target_pos,
+            base_value,
+            distance,
+            true // 默认安全
+        };
+      
+        // 安全性检查1: 安全区收缩
+        if (Utils::willDisappearInShrink(state, target_pos.x, target_pos.y)) {
+            result.is_safe = false;
+            return result; // 目标将消失，直接返回
+        }
+      
+        // 安全性检查2: 死胡同和瓶颈
+        auto dead_end = analyzeDeadEnd(state, target_pos.y, target_pos.x);
+        if (dead_end.is_dead_end) {
+            // 对宝箱尤其严格判断死胡同风险
+            if (is_chest && dead_end.risk_score < -500) {
+                result.is_safe = false;
+                result.value *= 0.3; // 大幅降低价值
+            } else {
+                // 根据风险程度降低价值
+                result.value *= (1.0 + dead_end.risk_score / 1000);
+            }
+        }
+      
+        // 竞争因素
+        int closest_competitor_dist = INT_MAX;
+      
+        for (const auto &snake : state.snakes) {
+            if (snake.id != MYID) {
+                int enemy_dist = abs(snake.get_head().y - target_pos.y) + 
+                                abs(snake.get_head().x - target_pos.x);
+              
+                if (enemy_dist < distance) {
+                    closest_competitor_dist = min(closest_competitor_dist, enemy_dist);
+                  
+                    // 对宝箱的竞争评估更严格
+                    if (is_chest) {
+                        result.value *= 0.5; // 竞争者更近，价值减半
+                      
+                        // 如果竞争者远远更近，宝箱几乎不可能获得
+                        if (enemy_dist < distance / 2) {
+                            result.is_safe = false;
+                            result.value *= 0.2; // 进一步大幅降低价值
+                        }
+                    } else {
+                        result.value *= 0.7; // 钥匙竞争惩罚较轻
+                    }
+                }
+            }
+        }
+      
+        return result;
+    }
 }
 
-// 添加到judge函数之前（约1372行）
-Direction moveToTarget(const GameState &state, const Point &target) {
+// 添加到judge函数之前
+Direction chooseBestDirection(const GameState &state, const vector<Direction>& preferred_dirs = {}) {
+                unordered_set<Direction> illegals = illegalMove(state);
+    vector<Direction> legalMoves;
+  
+    // 首先尝试首选方向
+    for (auto dir : preferred_dirs) {
+        if (illegals.count(dir) == 0) {
+            return dir; // 首选方向合法，直接返回
+        }
+    }
+  
+    // 没有可用的首选方向，收集所有合法移动
+    for (auto dir : validDirections) {
+        if (illegals.count(dir) == 0) {
+            legalMoves.push_back(dir);
+        }
+    }
+  
+    // 没有合法移动
+    if (legalMoves.empty()) {
+        return Direction::UP; // 返回默认方向，外部会处理为护盾
+    }
+  
+    // 评估每个合法移动
+    double maxF = -4000;
+    Direction best = legalMoves[0];
     const auto &head = state.get_self().get_head();
   
-    // 确定移动方向
-    Direction move_dir;
-    if (head.x > target.x) move_dir = Direction::LEFT;
-    else if (head.x < target.x) move_dir = Direction::RIGHT;
-    else if (head.y > target.y) move_dir = Direction::UP;
-    else move_dir = Direction::DOWN;
+    for (auto dir : legalMoves) {
+        const auto [y, x] = Utils::nextPos({head.y, head.x}, dir);
+        double eval = Strategy::eval(state, y, x, head.y, head.x);
+      
+        if (eval > maxF) {
+            maxF = eval;
+            best = dir;
+        }
+    }
   
-    // 检查移动安全性
-    unordered_set<Direction> illegals = illegalMove(state);
-    return (illegals.count(move_dir) == 0) ? move_dir : Direction::UP; // 返回UP作为无效值
+    return (maxF == -4000) ? Direction::UP : best;
 }
 
 // 食物优先级处理辅助函数
@@ -1385,37 +1478,32 @@ bool processFoodByPriority(const GameState &state, int minValue, int maxRange, D
         }
         
         // 计算距离
-        int dist = abs(head.y - item.pos.y) + abs(head.x - item.pos.x);
+            int dist = abs(head.y - item.pos.y) + abs(head.x - item.pos.x);
         if (dist > maxRange) {
             continue;  // 跳过超出范围的食物
         }
         
-        // 检查安全区收缩
-        int current_tick = MAX_TICKS - state.remaining_ticks;
-        int ticks_to_shrink = state.next_shrink_tick - current_tick;
-        
-        if (ticks_to_shrink >= 0 && ticks_to_shrink <= 20) {
-            if (item.pos.x < state.next_safe_zone.x_min || item.pos.x > state.next_safe_zone.x_max ||
-                item.pos.y < state.next_safe_zone.y_min || item.pos.y > state.next_safe_zone.y_max) {
-                continue; // 食物将消失，跳过
-            }
+        // 使用通用的目标可达性检测
+        if (!Utils::isTargetReachable(state, item.pos, item.lifetime)) {
+            continue; // 跳过不可达的食物
         }
         
-        // 检查是否能够及时到达
-        if (!Utils::canReachFoodInTime(head.y, head.x, item.pos.y, item.pos.x, item.lifetime)) {
-            continue; // 跳过无法及时到达的食物
-        }
+        // 计算前往食物的首选方向
+        vector<Direction> preferred_dirs;
         
-        // 确定移动方向
-        if (head.x > item.pos.x) moveDirection = Direction::LEFT;
-        else if (head.x < item.pos.x) moveDirection = Direction::RIGHT;
-        else if (head.y > item.pos.y) moveDirection = Direction::UP;
-        else moveDirection = Direction::DOWN;
+        // 水平方向
+        if (head.x > item.pos.x) preferred_dirs.push_back(Direction::LEFT);
+        else if (head.x < item.pos.x) preferred_dirs.push_back(Direction::RIGHT);
         
-        // 检查移动安全性
-        unordered_set<Direction> illegals = illegalMove(state);
-        if (illegals.count(moveDirection) == 0) {
-            return true;  // 找到合适的食物和方向
+        // 垂直方向
+        if (head.y > item.pos.y) preferred_dirs.push_back(Direction::UP);
+        else if (head.y < item.pos.y) preferred_dirs.push_back(Direction::DOWN);
+        
+        // 使用方向选择器
+        Direction dir = chooseBestDirection(state, preferred_dirs);
+        if (dir != Direction::UP || state.get_self().direction == 1) {
+            moveDirection = dir;
+            return true;
         }
     }
     
@@ -1431,9 +1519,21 @@ int judge(const GameState &state)
     if ((state.get_self().has_key && is_chest_target && current_target.x != -1 && current_target.y != -1) ||
         (!state.get_self().has_key && is_key_target && current_target.x != -1 && current_target.y != -1)) {
         
-        Direction move_dir = moveToTarget(state, current_target);
-        if (move_dir != Direction::UP || state.get_self().direction == 1) { // 不是默认无效值，或者当前方向就是UP
-            return Utils::dir2num(move_dir);
+        // 计算前往目标的首选方向
+        vector<Direction> preferred_dirs;
+        const auto &head = state.get_self().get_head();
+        
+        // 水平方向
+        if (head.x > current_target.x) preferred_dirs.push_back(Direction::LEFT);
+        else if (head.x < current_target.x) preferred_dirs.push_back(Direction::RIGHT);
+        
+        // 垂直方向
+        if (head.y > current_target.y) preferred_dirs.push_back(Direction::UP);
+        else if (head.y < current_target.y) preferred_dirs.push_back(Direction::DOWN);
+        
+        Direction best_dir = chooseBestDirection(state, preferred_dirs);
+        if (best_dir != Direction::UP || state.get_self().direction == 1) {
+            return Utils::dir2num(best_dir);
         }
     }
     
@@ -1446,12 +1546,12 @@ int judge(const GameState &state)
     const int EXTENDED_RANGE = 10;   // 扩展检测范围
     
     // 使用辅助函数处理不同优先级的食物
-    Direction move_dir;
-    
+            Direction move_dir;
+            
     // 第一优先级：极近距离高价值尸体 (<=4格，价值>=5)
     if (processFoodByPriority(state, 5, VERY_CLOSE_RANGE, move_dir)) {
-        return Utils::dir2num(move_dir);
-    }
+                return Utils::dir2num(move_dir);
+            }
     
     // 特殊情况：极近距离的普通食物 (<=2格，任意价值>0)
     for (const auto &item : state.items) {
@@ -1459,32 +1559,24 @@ int judge(const GameState &state)
         if (item.value > 0 && item.value < 5) {
             int dist = abs(head.y - item.pos.y) + abs(head.x - item.pos.x);
             if (dist <= 2) { // 非常近的食物
-                // 检查是否会因安全区收缩而消失
-                int current_tick = MAX_TICKS - state.remaining_ticks;
-                int ticks_to_shrink = state.next_shrink_tick - current_tick;
-                
-                if (ticks_to_shrink >= 0 && ticks_to_shrink <= 20) {
-                    if (item.pos.x < state.next_safe_zone.x_min || item.pos.x > state.next_safe_zone.x_max ||
-                        item.pos.y < state.next_safe_zone.y_min || item.pos.y > state.next_safe_zone.y_max) {
-                        continue; // 食物将消失，跳过
-                    }
+                // 使用通用的目标可达性检测
+                if (!Utils::isTargetReachable(state, item.pos, item.lifetime)) {
+                    continue; // 跳过不可达的食物
                 }
                 
-                // 检查是否能够及时到达
-                if (!Utils::canReachFoodInTime(head.y, head.x, item.pos.y, item.pos.x, item.lifetime)) {
-                    continue; // 跳过无法及时到达的食物
-                }
+                // 如果可达且安全，计算首选方向
+                vector<Direction> preferred_dirs;
                 
-                // 如果可达且安全，直接获取这个近距离食物
-                Direction dir;
-                if (head.x > item.pos.x) dir = Direction::LEFT;
-                else if (head.x < item.pos.x) dir = Direction::RIGHT;
-                else if (head.y > item.pos.y) dir = Direction::UP;
-                else dir = Direction::DOWN;
+                // 水平方向
+                if (head.x > item.pos.x) preferred_dirs.push_back(Direction::LEFT);
+                else if (head.x < item.pos.x) preferred_dirs.push_back(Direction::RIGHT);
                 
-                // 检查移动安全性
-                unordered_set<Direction> illegals = illegalMove(state);
-                if (illegals.count(dir) == 0) {
+                // 垂直方向
+                if (head.y > item.pos.y) preferred_dirs.push_back(Direction::UP);
+                else if (head.y < item.pos.y) preferred_dirs.push_back(Direction::DOWN);
+                
+                Direction dir = chooseBestDirection(state, preferred_dirs);
+                if (dir != Direction::UP || state.get_self().direction == 1) {
                     return Utils::dir2num(dir);
                 }
             }
@@ -1502,88 +1594,14 @@ int judge(const GameState &state)
     }
     
     // 普通近距离食物检测
-    for (const auto &item : state.items)
-    {
-        if (item.value == -2) continue; // 跳过陷阱
-        
-        int dist = abs(head.y - item.pos.y) + abs(head.x - item.pos.x);
-        if (dist <= VERY_CLOSE_RANGE)
-        {
-            // 首先检查是否会因安全区收缩而消失
-            int current_tick = MAX_TICKS - state.remaining_ticks;
-            int ticks_to_shrink = state.next_shrink_tick - current_tick;
-            
-            if (ticks_to_shrink >= 0 && ticks_to_shrink <= 20) {
-                if (item.pos.x < state.next_safe_zone.x_min || item.pos.x > state.next_safe_zone.x_max ||
-                    item.pos.y < state.next_safe_zone.y_min || item.pos.y > state.next_safe_zone.y_max) {
-                    continue; // 食物将消失，跳过
-                }
-            }
-            
-            // 然后检查是否能够及时到达
-            if (!Utils::canReachFoodInTime(head.y, head.x, item.pos.y, item.pos.x, item.lifetime)) {
-                continue; // 跳过无法及时到达的食物
-            }
-            
-            // 确定移动方向
-            Direction dir;
-            if (head.x > item.pos.x) dir = Direction::LEFT;
-            else if (head.x < item.pos.x) dir = Direction::RIGHT;
-            else if (head.y > item.pos.y) dir = Direction::UP;
-            else dir = Direction::DOWN;
-            
-            // 检查移动安全性
-            unordered_set<Direction> illegals = illegalMove(state);
-            if (illegals.count(dir) == 0) {
-                return Utils::dir2num(dir);
-            }
-        }
+    if (processFoodByPriority(state, 0, VERY_CLOSE_RANGE, move_dir)) {
+        return Utils::dir2num(move_dir);
     }
     
-    // 确定合法移动
-    unordered_set<Direction> illegals = illegalMove(state);
-    vector<Direction> legalMoves;
-    
-    for (auto dir : validDirections)
-    {
-        if (illegals.count(dir) == 0)
-        {
-            legalMoves.push_back(dir);
-        }
-    }
-    
-    // 没有合法移动，使用护盾
-    if (legalMoves.empty())
-    {
-        return SHIELD_COMMAND;
-    }
-    
-    // 评估每个合法移动的分数
-    double maxF = -4000;
-    Direction choice = legalMoves[0];
-    
-    for (auto dir : legalMoves)
-    {
-        // 重用前面已经声明的head变量
-        const auto [y, x] = Utils::nextPos({head.y, head.x}, dir);
-        
-        double eval = Strategy::eval(state, y, x, head.y, head.x);
-        
-        // 更新最高分数的方向
-        if (eval > maxF)
-        {
-            maxF = eval;
-            choice = dir;
-        }
-    }
-    
-    // 如果评分极低，使用护盾
-    if (maxF == -4000)
-    {
-        return SHIELD_COMMAND;
-    }
-    
-    return Utils::dir2num(choice);
+    // 默认行为 - 评估所有方向并选择最佳
+    Direction best_dir = chooseBestDirection(state);
+    return (best_dir == Direction::UP && state.get_self().direction != 1) ? 
+           SHIELD_COMMAND : Utils::dir2num(best_dir);
 }
 
 int main() {
