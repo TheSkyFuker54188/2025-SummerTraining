@@ -509,9 +509,9 @@ unordered_set<Direction> illegalMove(const GameState &state)
         else
         {
             // 添加安全区检查
-            if (x < state.current_safe_zone.x_min || x > state.current_safe_zone.x_max || 
-                y < state.current_safe_zone.y_min || y > state.current_safe_zone.y_max)
-            {
+        if (x < state.current_safe_zone.x_min || x > state.current_safe_zone.x_max ||
+            y < state.current_safe_zone.y_min || y > state.current_safe_zone.y_max)
+        {
                 // 只有当护盾时间足够时才允许离开安全区
                 if (self.shield_time <= 1) {
                     illegals.insert(dir);
@@ -704,42 +704,163 @@ namespace Strategy
             }
         }
         
-        // 特殊检查：如果在关口位置，小心进入
-        bool flag = false;
-        if (sy == 9 && sx == 20)
-        {
-            const int t = mp2[18 - fy][20];
-            flag = true;
-            if (t == -5 || t == -6 || t == -7)
-            {
-                return -1000;
+        // 动态瓶颈区域检测（替换原有硬编码的特殊位置检测）
+        bool is_bottleneck = false;
+        int wall_count = 0;
+        int danger_direction_count = 0;
+        vector<pair<int, int>> exit_directions;
+        
+        // 检查周围有多少墙或障碍物
+        for (auto dir : validDirections) {
+            const auto [ny, nx] = Utils::nextPos({sy, sx}, dir);
+            if (!Utils::boundCheck(ny, nx) || mp[ny][nx] == -4) {
+                wall_count++; // 墙或边界
+            } else if (mp2[ny][nx] == -5) {
+                wall_count++; // 蛇身体部分，完全阻挡
+            } else if (mp2[ny][nx] == -6 || mp2[ny][nx] == -7) {
+                danger_direction_count++; // 危险方向（蛇头/尾可能移动区域）
+            } else {
+                // 记录可能的出口方向
+                exit_directions.push_back({ny, nx});
             }
         }
-        if (sy == 21 && sx == 20)
-        {
-            const int t = mp2[42 - fy][20];
-            flag = true;
-            if (t == -5 || t == -6 || t == -7)
-            {
-                return -1000;
+        
+        // 如果周围有大量障碍，且可移动方向很少，视为瓶颈
+        if (wall_count >= 2 && exit_directions.size() <= 2) {
+            is_bottleneck = true;
+            
+            // 检查出口方向是否安全
+            for (const auto& [exit_y, exit_x] : exit_directions) {
+                bool exit_safe = true;
+                
+                // 检查这个出口附近是否有敌方蛇
+                for (const auto &snake : state.snakes) {
+                    if (snake.id != MYID && snake.id != -1) {
+                        const Point &enemy_head = snake.get_head();
+                        int dist_to_exit = abs(enemy_head.y - exit_y) + abs(enemy_head.x - exit_x);
+                        
+                        // 如果敌方蛇距离出口很近，这个出口不安全
+                        if (dist_to_exit <= 3) {
+                            exit_safe = false;
+                            break;
+                        }
+                    }
+                }
+                
+                // 如果这个出口安全，瓶颈就不那么危险
+                if (exit_safe) {
+                    is_bottleneck = false;
+                    break;
+                }
+            }
+            
+            // 如果是危险瓶颈(所有出口都不安全或没有出口)
+            if (is_bottleneck) {
+                // 危险程度取决于周围墙的数量和危险方向的数量
+                int danger_level = wall_count * 500 + danger_direction_count * 300;
+                score -= danger_level;
+                
+                // 极端情况：完全封闭或无安全出口
+                if (exit_directions.empty() || (wall_count >= 3 && danger_direction_count >= 1)) {
+                    return -2000; // 极度危险，几乎确定死亡
+                }
             }
         }
-        if (sy == 15 && sx == 14)
-        {
-            const int t = mp2[15][28 - fx];
-            flag = true;
-            if (t == -5 || t == -6 || t == -7)
-            {
-                return -1000;
-            }
-        }
-        if (sy == 15 && sx == 26)
-        {
-            const int t = mp2[15][52 - fx];
-            flag = true;
-            if (t == -5 || t == -6 || t == -7)
-            {
-                return -1000;
+        
+        // 死胡同检测
+        bool is_dead_end = false;
+        int max_depth = 0;  // 死胡同的深度
+        
+        // 简单的方向性检查 - 判断该点周围空间结构
+        if (Utils::boundCheck(sy, sx)) {
+            // 检查上下左右四个方向的墙体数量
+            int horizontal_walls = 0;
+            int vertical_walls = 0;
+            
+            // 左右方向
+            if (!Utils::boundCheck(sy, sx-1) || mp[sy][sx-1] == -4 || mp2[sy][sx-1] == -5) horizontal_walls++;
+            if (!Utils::boundCheck(sy, sx+1) || mp[sy][sx+1] == -4 || mp2[sy][sx+1] == -5) horizontal_walls++;
+            
+            // 上下方向
+            if (!Utils::boundCheck(sy-1, sx) || mp[sy-1][sx] == -4 || mp2[sy-1][sx] == -5) vertical_walls++;
+            if (!Utils::boundCheck(sy+1, sx) || mp[sy+1][sx] == -4 || mp2[sy+1][sx] == -5) vertical_walls++;
+            
+            // 判断是否为潜在死胡同入口
+            if ((horizontal_walls == 2 && vertical_walls >= 1) || 
+                (vertical_walls == 2 && horizontal_walls >= 1)) {
+                
+                // 确定死胡同的方向
+                int open_dir_y = 0, open_dir_x = 0;
+                if (horizontal_walls < 2) {
+                    // 水平方向开放
+                    open_dir_y = 0;
+                    open_dir_x = (!Utils::boundCheck(sy, sx-1) || mp[sy][sx-1] == -4 || mp2[sy][sx-1] == -5) ? 1 : -1;
+                } else {
+                    // 垂直方向开放
+                    open_dir_y = (!Utils::boundCheck(sy-1, sx) || mp[sy-1][sx] == -4 || mp2[sy-1][sx] == -5) ? 1 : -1;
+                    open_dir_x = 0;
+                }
+                
+                // 沿着开放方向探测死胡同深度
+                int depth = 1;
+                int curr_y = sy + open_dir_y;
+                int curr_x = sx + open_dir_x;
+                
+                // 最多探测8格深度
+                while (depth < 8 && Utils::boundCheck(curr_y, curr_x) &&
+                       mp[curr_y][curr_x] != -4 && mp2[curr_y][curr_x] != -5) {
+                    
+                    // 检查当前位置是否形成新的出口
+                    int exits = 0;
+                    for (auto dir : validDirections) {
+                        const auto [next_y, next_x] = Utils::nextPos({curr_y, curr_x}, dir);
+                        
+                        // 跳过来时的方向
+                        if (next_y == curr_y - open_dir_y && next_x == curr_x - open_dir_x) continue;
+                        
+                        // 检查是否是有效出口
+                        if (Utils::boundCheck(next_y, next_x) && 
+                            mp[next_y][next_x] != -4 && mp2[next_y][next_x] != -5) {
+                            exits++;
+                        }
+                    }
+                    
+                    // 如果找到新出口，这不是死胡同
+                    if (exits > 0) {
+                        depth = 0; // 重置深度，表示不是死胡同
+                        break;
+                    }
+                    
+                    // 继续沿当前方向探索
+                    depth++;
+                    curr_y += open_dir_y;
+                    curr_x += open_dir_x;
+                }
+                
+                // 如果深度大于等于蛇的长度的一半，可能会被困住
+                if (depth > 0) {
+                    is_dead_end = true;
+                    max_depth = depth;
+                    
+                    // 检查我的蛇长度，如果死胡同太短可能被困
+                    int my_length = 0;
+                    for (const auto &snake : state.snakes) {
+                        if (snake.id == MYID) {
+                            my_length = snake.length;
+                            break;
+                        }
+                    }
+                    
+                    // 如果死胡同深度小于蛇长度的一半，可能无法调头
+                    if (max_depth < my_length / 2) {
+                        score -= (my_length / 2 - max_depth) * 400; // 惩罚分数
+                        
+                        // 极短死胡同且蛇较长时，给予极高惩罚
+                        if (max_depth <= 2 && my_length >= 8) {
+                            return -1800; // 几乎必死
+                        }
+                    }
+                }
             }
         }
         
@@ -748,12 +869,12 @@ namespace Strategy
         const int timeRest = state.remaining_ticks;
         
         // 处理陷阱的情况
-        if (mp[sy][sx] == -2 && !flag)
+        if (mp[sy][sx] == -2 && !is_bottleneck) // 只有当不是瓶颈时才考虑陷阱
         {
             // 使用专门的陷阱评估函数
             score = evaluateTrap(state, sy, sx);
         }
-        else if (mp[sy][sx] == -2 && flag && mp2[sy][sx] != -5 && mp2[sy][sx] != -6 && mp2[sy][sx] != -7)
+        else if (mp[sy][sx] == -2 && is_bottleneck && mp2[sy][sx] != -5 && mp2[sy][sx] != -6 && mp2[sy][sx] != -7)
         {
             // 拐角陷阱，但非紧急情况
             score = -500; // 非紧急情况下尽量避免
