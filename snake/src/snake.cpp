@@ -492,99 +492,77 @@ unordered_set<Direction> illegalMove(const GameState &state)
         }
     };
 
-    // 自己方向的反方向不能走
-    addReverse();
-
-    // 碰到其他蛇的身子不能走，但是开了护盾除外
-    // 墙绝对不能走
-    for (auto dir : validDirections)
-    {
+    // 检查方向是否合法的辅助函数
+    auto checkDirectionLegality = [&](Direction dir, bool is_emergency) {
         const Point &head = self.get_head();
         const auto [y, x] = Utils::nextPos({head.y, head.x}, dir);
         
-        if (!Utils::boundCheck(y, x))
-        {
-            illegals.insert(dir);
+        // 检查是否越界
+        if (!Utils::boundCheck(y, x)) {
+            return false; // 不合法
         }
-        else
-        {
-            // 添加安全区检查
-        if (x < state.current_safe_zone.x_min || x > state.current_safe_zone.x_max ||
-            y < state.current_safe_zone.y_min || y > state.current_safe_zone.y_max)
-        {
-                // 只有当护盾时间足够时才允许离开安全区
-                if (self.shield_time <= 1) {
-                    illegals.insert(dir);
-                }
+        
+        // 安全区检查 - 即使在紧急情况下也不允许离开安全区
+        if (x < state.current_safe_zone.x_min || x > state.current_safe_zone.x_max || 
+            y < state.current_safe_zone.y_min || y > state.current_safe_zone.y_max) {
+            // 只有当护盾时间足够时才允许离开安全区
+            if (self.shield_time <= 1) {
+                return false; // 不合法
             }
-            else if (mp[y][x] == -4) // 墙
-            {
-                illegals.insert(dir);
+        }
+        
+        // 墙检查 - 任何情况下都不能穿墙
+        if (mp[y][x] == -4) {
+            return false; // 不合法
+        }
+        
+        // 陷阱检查
+        if (mp[y][x] == -2 && !is_emergency) {
+            return false; // 非紧急情况下不能走陷阱
+        }
+        
+        // 蛇身体检查
+        if (mp2[y][x] == -5) {
+            // 紧急模式下，如果护盾时间够或能开护盾，可以穿过蛇身
+            if (is_emergency) {
+                return (self.shield_time >= 2 || (self.shield_cd == 0 && self.score > 20) || 
+                       state.remaining_ticks >= 255 - 9 + 2);
+            } else {
+                // 非紧急模式下，需要足够的护盾时间
+                return (self.shield_time >= 2);
             }
-            // 添加陷阱检查
-            else if (mp[y][x] == -2) // 陷阱
-            {
-                // 将陷阱添加到非法移动中，除非是紧急情况
-                if (!emergency_mode) {
-                    illegals.insert(dir);
-                }
-            }
-            else if (mp2[y][x] == -5 || mp2[y][x] == -6 || mp2[y][x] == -7)
-            {
-                // 如果护盾时间快要结束，并且开不了护盾了
-                // 一般护盾都是不值得的
-                if (self.shield_time < 2)
-                {
-                    illegals.insert(dir);
-                }
-            }
+        }
+        
+        // 蛇头或尾部可能移动区域
+        if ((mp2[y][x] == -6 || mp2[y][x] == -7) && !is_emergency) {
+            return (self.shield_time >= 2); // 非紧急模式下需要足够护盾时间
+        }
+        
+        return true; // 默认合法
+    };
+
+    // 自己方向的反方向不能走
+    addReverse();
+
+    // 第一轮检查
+    for (auto dir : validDirections) {
+        if (!checkDirectionLegality(dir, false)) {
+            illegals.insert(dir);
         }
     }
 
     // 如果四种方向都不行，进入紧急模式，重新评估
-    if (illegals.size() == 4)
-    {
+    if (illegals.size() == 4) {
         emergency_mode = true;
         illegals.clear();
 
         // 自己方向的反方向不能走
         addReverse();
 
-        // 放宽条件：墙绝对不能走，但在有护盾或可以开护盾的情况下可以穿过蛇，紧急情况下可以穿过陷阱
-        for (auto dir : validDirections)
-        {
-            const Point &head = self.get_head();
-            const auto [y, x] = Utils::nextPos({head.y, head.x}, dir);
-            
-            if (!Utils::boundCheck(y, x))
-            {
+        // 放宽条件下的第二轮检查
+        for (auto dir : validDirections) {
+            if (!checkDirectionLegality(dir, true)) {
                 illegals.insert(dir);
-            }
-            else
-            {
-                // 安全区检查 - 即使在紧急情况下也不允许离开安全区
-                if (x < state.current_safe_zone.x_min || x > state.current_safe_zone.x_max || 
-                    y < state.current_safe_zone.y_min || y > state.current_safe_zone.y_max)
-                {
-                    // 只有当护盾时间足够时才允许离开安全区
-                    if (self.shield_time <= 1) {
-                        illegals.insert(dir);
-                    }
-                }
-                else if (mp[y][x] == -4) // 墙
-                {
-                    illegals.insert(dir);
-                }
-                else if (mp2[y][x] == -5) // 蛇身
-                {
-                    // 如果护盾时间够或者能开护盾，则可以穿过
-                    if (!(self.shield_time >= 2 || (self.shield_cd == 0 && self.score > 20) ||
-                          state.remaining_ticks >= 255 - 9 + 2))
-                    {
-                        illegals.insert(dir);
-                    }
-                }
-                // 紧急情况下可以考虑穿过陷阱，不将其视为非法
             }
         }
     }
