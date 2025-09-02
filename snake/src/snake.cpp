@@ -1364,21 +1364,69 @@ Direction moveToTarget(const GameState &state, const Point &target) {
     return (illegals.count(move_dir) == 0) ? move_dir : Direction::UP; // 返回UP作为无效值
 }
 
+// 食物优先级处理辅助函数
+bool processFoodByPriority(const GameState &state, int minValue, int maxRange, Direction& moveDirection) {
+    const auto &head = state.get_self().get_head();
+    
+    for (const auto &item : state.items) {
+        // 根据价值过滤
+        if (item.value < minValue || item.value == -2) {
+            continue;  // 跳过低价值食物和陷阱
+        }
+        
+        // 计算距离
+        int dist = abs(head.y - item.pos.y) + abs(head.x - item.pos.x);
+        if (dist > maxRange) {
+            continue;  // 跳过超出范围的食物
+        }
+        
+        // 检查安全区收缩
+        int current_tick = MAX_TICKS - state.remaining_ticks;
+        int ticks_to_shrink = state.next_shrink_tick - current_tick;
+        
+        if (ticks_to_shrink >= 0 && ticks_to_shrink <= 20) {
+            if (item.pos.x < state.next_safe_zone.x_min || item.pos.x > state.next_safe_zone.x_max ||
+                item.pos.y < state.next_safe_zone.y_min || item.pos.y > state.next_safe_zone.y_max) {
+                continue; // 食物将消失，跳过
+            }
+        }
+        
+        // 检查是否能够及时到达
+        if (!Utils::canReachFoodInTime(head.y, head.x, item.pos.y, item.pos.x, item.lifetime)) {
+            continue; // 跳过无法及时到达的食物
+        }
+        
+        // 确定移动方向
+        if (head.x > item.pos.x) moveDirection = Direction::LEFT;
+        else if (head.x < item.pos.x) moveDirection = Direction::RIGHT;
+        else if (head.y > item.pos.y) moveDirection = Direction::UP;
+        else moveDirection = Direction::DOWN;
+        
+        // 检查移动安全性
+        unordered_set<Direction> illegals = illegalMove(state);
+        if (illegals.count(moveDirection) == 0) {
+            return true;  // 找到合适的食物和方向
+        }
+    }
+    
+    return false;  // 没有找到满足条件的食物
+}
+
 int judge(const GameState &state)
 {
     // 更新目标锁定状态
     lock_on_target(state);
-  
+    
     // 处理宝箱和钥匙的目标锁定
     if ((state.get_self().has_key && is_chest_target && current_target.x != -1 && current_target.y != -1) ||
         (!state.get_self().has_key && is_key_target && current_target.x != -1 && current_target.y != -1)) {
-      
+        
         Direction move_dir = moveToTarget(state, current_target);
         if (move_dir != Direction::UP || state.get_self().direction == 1) { // 不是默认无效值，或者当前方向就是UP
             return Utils::dir2num(move_dir);
         }
     }
-  
+    
     // 即时反应 - 处理近距离高价值目标
     const auto &head = state.get_self().get_head();
 
@@ -1387,47 +1435,15 @@ int judge(const GameState &state)
     const int CLOSE_RANGE = 6;       // 近距离
     const int EXTENDED_RANGE = 10;   // 扩展检测范围
     
-    // 第一优先级：极近距离高价值尸体 (<=3格)
-    for (const auto &item : state.items)
-    {
-        if (item.value >= 5)  // 高价值食物（蛇尸体）
-        {
-            int dist = abs(head.y - item.pos.y) + abs(head.x - item.pos.x);
-            if (dist <= VERY_CLOSE_RANGE)  // 极近距离最高优先级
-            {
-                // 首先检查是否会因安全区收缩而消失
-                int current_tick = MAX_TICKS - state.remaining_ticks;
-                int ticks_to_shrink = state.next_shrink_tick - current_tick;
-                
-                if (ticks_to_shrink >= 0 && ticks_to_shrink <= 20) {
-                    if (item.pos.x < state.next_safe_zone.x_min || item.pos.x > state.next_safe_zone.x_max ||
-                        item.pos.y < state.next_safe_zone.y_min || item.pos.y > state.next_safe_zone.y_max) {
-                        continue; // 食物将消失，跳过
-                    }
-                }
-                
-                // 检查是否能够及时到达
-                if (!Utils::canReachFoodInTime(head.y, head.x, item.pos.y, item.pos.x, item.lifetime)) {
-                    continue; // 跳过无法及时到达的食物
-                }
-                
-                // 确定移动方向
-                Direction move_dir;
-                if (head.x > item.pos.x) move_dir = Direction::LEFT;
-                else if (head.x < item.pos.x) move_dir = Direction::RIGHT;
-                else if (head.y > item.pos.y) move_dir = Direction::UP;
-                else move_dir = Direction::DOWN;
-                
-                // 检查移动安全性
-                unordered_set<Direction> illegals = illegalMove(state);
-                if (illegals.count(move_dir) == 0) {
-                    return Utils::dir2num(move_dir);
-                }
-            }
-        }
+    // 使用辅助函数处理不同优先级的食物
+    Direction move_dir;
+    
+    // 第一优先级：极近距离高价值尸体 (<=4格，价值>=5)
+    if (processFoodByPriority(state, 5, VERY_CLOSE_RANGE, move_dir)) {
+        return Utils::dir2num(move_dir);
     }
     
-    // 特殊情况：如果有极高价值尸体但距离远，而附近有普通食物，权衡选择
+    // 特殊情况：极近距离的普通食物 (<=2格，任意价值>0)
     for (const auto &item : state.items) {
         // 只考虑普通食物
         if (item.value > 0 && item.value < 5) {
@@ -1450,99 +1466,29 @@ int judge(const GameState &state)
                 }
                 
                 // 如果可达且安全，直接获取这个近距离食物
-                Direction move_dir;
-                if (head.x > item.pos.x) move_dir = Direction::LEFT;
-                else if (head.x < item.pos.x) move_dir = Direction::RIGHT;
-                else if (head.y > item.pos.y) move_dir = Direction::UP;
-                else move_dir = Direction::DOWN;
+                Direction dir;
+                if (head.x > item.pos.x) dir = Direction::LEFT;
+                else if (head.x < item.pos.x) dir = Direction::RIGHT;
+                else if (head.y > item.pos.y) dir = Direction::UP;
+                else dir = Direction::DOWN;
                 
                 // 检查移动安全性
                 unordered_set<Direction> illegals = illegalMove(state);
-                if (illegals.count(move_dir) == 0) {
-                    return Utils::dir2num(move_dir);
+                if (illegals.count(dir) == 0) {
+                    return Utils::dir2num(dir);
                 }
             }
         }
     }
     
     // 第二优先级：近距离更高价值尸体 (<=6格，价值>=8)
-    for (const auto &item : state.items)
-    {
-        if (item.value >= 8)  // 更高价值食物
-        {
-            int dist = abs(head.y - item.pos.y) + abs(head.x - item.pos.x);
-            if (dist <= CLOSE_RANGE)  // 近距离
-            {
-                // 首先检查是否会因安全区收缩而消失
-                int current_tick = MAX_TICKS - state.remaining_ticks;
-                int ticks_to_shrink = state.next_shrink_tick - current_tick;
-                
-                if (ticks_to_shrink >= 0 && ticks_to_shrink <= 20) {
-                    if (item.pos.x < state.next_safe_zone.x_min || item.pos.x > state.next_safe_zone.x_max ||
-                        item.pos.y < state.next_safe_zone.y_min || item.pos.y > state.next_safe_zone.y_max) {
-                        continue; // 食物将消失，跳过
-                    }
-                }
-                
-                // 检查是否能够及时到达
-                if (!Utils::canReachFoodInTime(head.y, head.x, item.pos.y, item.pos.x, item.lifetime)) {
-                    continue; // 跳过无法及时到达的食物
-                }
-                
-                // 确定移动方向
-                Direction move_dir;
-                if (head.x > item.pos.x) move_dir = Direction::LEFT;
-                else if (head.x < item.pos.x) move_dir = Direction::RIGHT;
-                else if (head.y > item.pos.y) move_dir = Direction::UP;
-                else move_dir = Direction::DOWN;
-                
-                // 检查移动安全性
-                unordered_set<Direction> illegals = illegalMove(state);
-                if (illegals.count(move_dir) == 0) {
-                    return Utils::dir2num(move_dir);
-                }
-            }
-        }
+    if (processFoodByPriority(state, 8, CLOSE_RANGE, move_dir)) {
+        return Utils::dir2num(move_dir);
     }
     
-    // 第三优先级：扩展距离高价值尸体 (<=10格，价值>=10)
-    for (const auto &item : state.items)
-    {
-        if (item.value >= 10)  // 极高价值食物
-        {
-            int dist = abs(head.y - item.pos.y) + abs(head.x - item.pos.x);
-            if (dist <= EXTENDED_RANGE)  // 扩展距离
-            {
-                // 首先检查是否会因安全区收缩而消失
-                int current_tick = MAX_TICKS - state.remaining_ticks;
-                int ticks_to_shrink = state.next_shrink_tick - current_tick;
-                
-                if (ticks_to_shrink >= 0 && ticks_to_shrink <= 20) {
-                    if (item.pos.x < state.next_safe_zone.x_min || item.pos.x > state.next_safe_zone.x_max ||
-                        item.pos.y < state.next_safe_zone.y_min || item.pos.y > state.next_safe_zone.y_max) {
-                        continue; // 食物将消失，跳过
-                    }
-                }
-                
-                // 检查是否能够及时到达
-                if (!Utils::canReachFoodInTime(head.y, head.x, item.pos.y, item.pos.x, item.lifetime)) {
-                    continue; // 跳过无法及时到达的食物
-                }
-                
-                // 确定移动方向
-                Direction move_dir;
-                if (head.x > item.pos.x) move_dir = Direction::LEFT;
-                else if (head.x < item.pos.x) move_dir = Direction::RIGHT;
-                else if (head.y > item.pos.y) move_dir = Direction::UP;
-                else move_dir = Direction::DOWN;
-                
-                // 检查移动安全性
-                unordered_set<Direction> illegals = illegalMove(state);
-                if (illegals.count(move_dir) == 0) {
-                    return Utils::dir2num(move_dir);
-                }
-            }
-        }
+    // 第三优先级：扩展距离极高价值尸体 (<=10格，价值>=10)
+    if (processFoodByPriority(state, 10, EXTENDED_RANGE, move_dir)) {
+        return Utils::dir2num(move_dir);
     }
     
     // 普通近距离食物检测
@@ -1551,7 +1497,7 @@ int judge(const GameState &state)
         if (item.value == -2) continue; // 跳过陷阱
         
         int dist = abs(head.y - item.pos.y) + abs(head.x - item.pos.x);
-        if (dist <= VERY_CLOSE_RANGE)  // 修复：使用VERY_CLOSE_RANGE替代immediate_range
+        if (dist <= VERY_CLOSE_RANGE)
         {
             // 首先检查是否会因安全区收缩而消失
             int current_tick = MAX_TICKS - state.remaining_ticks;
@@ -1570,16 +1516,16 @@ int judge(const GameState &state)
             }
             
             // 确定移动方向
-            Direction move_dir;
-            if (head.x > item.pos.x) move_dir = Direction::LEFT;
-            else if (head.x < item.pos.x) move_dir = Direction::RIGHT;
-            else if (head.y > item.pos.y) move_dir = Direction::UP;
-            else move_dir = Direction::DOWN;
+            Direction dir;
+            if (head.x > item.pos.x) dir = Direction::LEFT;
+            else if (head.x < item.pos.x) dir = Direction::RIGHT;
+            else if (head.y > item.pos.y) dir = Direction::UP;
+            else dir = Direction::DOWN;
             
             // 检查移动安全性
             unordered_set<Direction> illegals = illegalMove(state);
-            if (illegals.count(move_dir) == 0) {
-                return Utils::dir2num(move_dir);
+            if (illegals.count(dir) == 0) {
+                return Utils::dir2num(dir);
             }
         }
     }
