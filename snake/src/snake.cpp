@@ -255,6 +255,70 @@ namespace Strategy {
         // 整合评分
         return bfs_score + safe_zone_score + strategic_score + food_value;
     }
+
+    // 新增：护盾使用价值评估
+    bool shouldUseShield(const GameState &state, double path_safety_score, double target_value, 
+                         bool is_emergency = false, bool is_survival = false) {
+        const auto &self = state.get_self();
+        
+        // 检查基本条件
+        if (self.shield_cd != 0 || self.score < 20) {
+            return false; // 无法使用护盾
+        }
+        
+        // 1. 生死攸关情形 - 优先级最高
+        if (is_survival) {
+            return true; // 生死存亡时无条件使用
+        }
+        
+        // 2. 后期策略调整 - 高分后期更保守
+        bool is_late_game = state.remaining_ticks < 80;
+        if (is_late_game && self.score >= 60) {
+            // 后期高分时，只为极高价值目标开盾(>= 50)
+            if (target_value < 50) {
+                return false;
+            }
+        }
+        
+        // 3. 目标价值评估 - 计算预期收益与护盾成本比较
+        double risk_factor = 1.0 - min(1.0, -path_safety_score / 1500.0);
+        double expected_gain = target_value * risk_factor;
+        
+        // 4. 安全区收缩紧急情况评估
+        if (is_emergency) {
+            int current_tick = MAX_TICKS - state.remaining_ticks;
+            int ticks_to_shrink = state.next_shrink_tick - current_tick;
+            
+            // 计算到安全区的距离
+            const auto &head = self.get_head();
+            int dist_to_safe_zone = INT_MAX;
+            
+            if (head.x < state.next_safe_zone.x_min) {
+                dist_to_safe_zone = min(dist_to_safe_zone, state.next_safe_zone.x_min - head.x);
+            } else if (head.x > state.next_safe_zone.x_max) {
+                dist_to_safe_zone = min(dist_to_safe_zone, head.x - state.next_safe_zone.x_max);
+            }
+            
+            if (head.y < state.next_safe_zone.y_min) {
+                dist_to_safe_zone = min(dist_to_safe_zone, state.next_safe_zone.y_min - head.y);
+            } else if (head.y > state.next_safe_zone.y_max) {
+                dist_to_safe_zone = min(dist_to_safe_zone, head.y - state.next_safe_zone.y_max);
+            }
+            
+            // 如果能安全到达，不使用护盾
+            if (dist_to_safe_zone < ticks_to_shrink - 2) {
+                return false;
+            }
+            
+            // 如果无法安全到达，且时间很紧，使用护盾
+            if (ticks_to_shrink <= 5) {
+                return true;
+            }
+        }
+        
+        // 5. 最终决策：预期收益必须显著高于护盾成本(20)
+        return expected_gain > 30; // 只有当预期收益显著高于护盾成本时才使用
+    }
 }
 
 namespace Utils
@@ -2912,19 +2976,19 @@ bool enhancedFoodProcessByPriority(const GameState &state, int minValue, int max
     // 获取路径安全性评估
     auto best_path_safety = Strategy::evaluatePathSafety(state, head, best_food.pos);
     
-    // 根据路径安全性决定是否使用护盾
+    // 使用优化后的护盾决策 - 根据食物价值和路径安全性决定是否使用护盾
     bool should_use_shield = false;
     
-    // 如果路径不安全但食物价值高
+    // 只有当食物价值足够高且路径有风险时才考虑使用护盾
     if (!best_path_safety.is_safe && best_path_safety.safety_score > config.shield_activation_threshold) {
-        // 如果有护盾可用且食物价值足够高
-        if (self.shield_cd == 0 && self.score >= 20 && best_food.value >= 5) {
-            should_use_shield = true;
-        }
-        // 或者护盾正在生效
-        else if (self.shield_time > 0) {
-            should_use_shield = true;
-        }
+        // 使用新的护盾评估函数
+        should_use_shield = Strategy::shouldUseShield(
+            state, 
+            best_path_safety.safety_score, 
+            best_food.value,
+            false, // 不是安全区紧急情况
+            false  // 不是生死攸关情形
+        );
     }
     
     // 使用增强版方向选择逻辑
@@ -3017,19 +3081,22 @@ int judge(const GameState &state)
             auto path_safety = Strategy::evaluatePathSafety(state, head, current_target);
             auto path = Strategy::findPath(state, head, current_target);
             
-            // 根据路径安全程度决定是否使用护盾
+            // 计算特殊目标的实际价值
+            int expected_gain = is_chest ? 100 : 40; // 宝箱或钥匙的基础价值
+            
+            // 根据路径安全程度决定是否使用护盾 - 使用优化的护盾决策
             bool should_use_shield = false;
             
             // 如果路径不安全但必须获取目标（如钥匙即将消失）
             if (!path_safety.is_safe && path_safety.safety_score > config.shield_activation_threshold) {
-                // 如果有护盾可用
-                if (self.shield_cd == 0 && self.score >= 20) {
-                    should_use_shield = true;
-                }
-                // 或者护盾正在生效
-                else if (self.shield_time > 0) {
-                    should_use_shield = true;
-                }
+                // 使用新的护盾评估函数
+                should_use_shield = Strategy::shouldUseShield(
+                    state, 
+                    path_safety.safety_score, 
+                    expected_gain,
+                    false, // 不是安全区紧急情况
+                    false  // 不是生死攸关情形
+                );
             }
             
             // 如果找到了路径
@@ -3162,8 +3229,35 @@ int judge(const GameState &state)
                 if (!safe_zone_dirs.empty()) {
                     Direction safe_dir = chooseBestDirection(state, safe_zone_dirs);
                     
-                    // 如果距离收缩时间很近，考虑使用护盾
-                    if (is_emergency_shrink && self.shield_cd == 0 && self.score >= 20) {
+                    // 计算到安全区的最短距离
+                    int dist_to_safe_zone = INT_MAX;
+                    
+                    if (head.x < state.next_safe_zone.x_min) {
+                        dist_to_safe_zone = min(dist_to_safe_zone, state.next_safe_zone.x_min - head.x);
+                    } else if (head.x > state.next_safe_zone.x_max) {
+                        dist_to_safe_zone = min(dist_to_safe_zone, head.x - state.next_safe_zone.x_max);
+                    }
+                    
+                    if (head.y < state.next_safe_zone.y_min) {
+                        dist_to_safe_zone = min(dist_to_safe_zone, state.next_safe_zone.y_min - head.y);
+                    } else if (head.y > state.next_safe_zone.y_max) {
+                        dist_to_safe_zone = min(dist_to_safe_zone, head.y - state.next_safe_zone.y_max);
+                    }
+                    
+                    // 如果距离收缩时间很近且无法安全到达，考虑使用护盾
+                    bool should_use_shield = false;
+                    if (is_emergency_shrink) {
+                        // 使用新的护盾评估函数
+                        should_use_shield = Strategy::shouldUseShield(
+                            state, 
+                            -1000, // 假设安全区收缩风险较高
+                            50,    // 安全区收缩的生存价值很高
+                            true,  // 是安全区紧急情况
+                            false  // 不是生死攸关情形
+                        );
+                    }
+                    
+                    if (should_use_shield && self.shield_cd == 0 && self.score >= 20) {
                         return SHIELD_COMMAND;
                     }
                     
@@ -3189,7 +3283,7 @@ int judge(const GameState &state)
     }
     
     if (legalMoves.empty()) {
-        // 如果没有合法移动但可以开护盾
+        // 如果没有合法移动但可以开护盾 - 生死攸关情况，保留无条件使用护盾
         if (self.shield_cd == 0 && self.score >= 20) {
             return SHIELD_COMMAND;
         }
