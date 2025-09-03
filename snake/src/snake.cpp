@@ -98,6 +98,10 @@ namespace Strategy {
     pair<double, bool> checkTerrainRisk(const GameState &state, const Point &point);
     double checkSnakeDensityRisk(const GameState &state, const Point &point, int step_idx);
     double checkSpecialTerrainRisk(const GameState &state, const Point &point);
+    
+    // 前向声明
+    double evaluateSafeZoneDensity(const GameState &state, int x, int y);
+    double evaluateStrategicPosition(const GameState &state, int y, int x);
 }
 
 namespace Utils
@@ -965,16 +969,29 @@ namespace Strategy
         return (count > 0) ? (total_value / count) * count : 0;
     }
 
-    // 安全区边界评分函数（不再有中心倾向）
+    // 安全区边界评分函数（考虑蛇密度和安全区收缩）
     double safeZoneCenterScore(const GameState &state, int y, int x)
     {
+        double score = 0;
+        
         // 检查位置是否在安全区内，并根据到边界的距离给予适当评分
         SafeZoneBounds zone = state.current_safe_zone;
         
         // 当安全区即将收缩时，使用下一个安全区
-        int ticks_to_shrink = state.next_shrink_tick - (MAX_TICKS - state.remaining_ticks);
+        int current_tick = MAX_TICKS - state.remaining_ticks;
+        int ticks_to_shrink = state.next_shrink_tick - current_tick;
         if (ticks_to_shrink >= 0 && ticks_to_shrink <= 25) {
             zone = state.next_safe_zone;
+            
+            // 如果在收缩前位于下一个安全区内，加分
+            if (x >= state.next_safe_zone.x_min && x <= state.next_safe_zone.x_max &&
+                y >= state.next_safe_zone.y_min && y <= state.next_safe_zone.y_max) {
+                score += 100; // 给予明显加分，鼓励提前进入下一个安全区
+                
+                // 收缩越近，加分越高
+                if (ticks_to_shrink <= 5) score += 200;
+                else if (ticks_to_shrink <= 10) score += 100;
+            }
         }
         
         // 计算到安全区边界的最小距离
@@ -985,8 +1002,48 @@ namespace Strategy
             zone.y_max - y
         });
         
-        // 如果距离边界太近(<=3格)，给予轻微惩罚，否则返回0（不偏好任何区域）
-        return (dist_to_border <= 3) ? -5.0 * (3 - dist_to_border) : 0;
+        // 如果距离边界太近(<=3格)，给予轻微惩罚
+        if (dist_to_border <= 3) {
+            score -= 5.0 * (3 - dist_to_border);
+        }
+        
+        // 评估该位置的蛇密度
+        int nearby_snakes = 0;
+        int close_snakes = 0;
+        const int NEARBY_RADIUS = 7;  // 较大范围
+        const int CLOSE_RADIUS = 3;   // 较小范围
+        
+        for (const auto &snake : state.snakes) {
+            if (snake.id == MYID || snake.id == -1) continue; // 跳过自己和无效蛇
+            
+            const Point &enemy_head = snake.get_head();
+            int dist = abs(enemy_head.y - y) + abs(enemy_head.x - x);
+            
+            if (dist <= CLOSE_RADIUS) {
+                close_snakes++;
+            }
+            
+            if (dist <= NEARBY_RADIUS) {
+                nearby_snakes++;
+            }
+        }
+        
+        // 蛇密度评分 - 蛇密度越高，惩罚越大
+        double density_penalty = close_snakes * 100 + (nearby_snakes - close_snakes) * 30;
+        
+        // 如果有蛇在很近的位置，给予额外惩罚
+        if (close_snakes > 0) {
+            density_penalty *= 1.5;
+        }
+        
+        score -= density_penalty;
+        
+        // 如果是即将收缩的安全区边缘，考虑额外风险
+        if (ticks_to_shrink >= 0 && ticks_to_shrink <= 10 && dist_to_border <= 2) {
+            score -= 300; // 安全区即将收缩且靠近边缘，额外惩罚
+        }
+        
+        return score;
     }
 
     // BFS搜索评估函数
@@ -994,8 +1051,8 @@ namespace Strategy
     {
         double score = 0;
         
-        // 安全区收缩风险评估 - 使用新的辅助函数
-        score += checkSafeZoneRisk(state, sx, sy);
+        // 安全区收缩风险和蛇密度评估 - 使用新的安全区密度评估函数
+        score += evaluateSafeZoneDensity(state, sx, sy);
         
         // 动态瓶颈区域检测（替换原有硬编码的特殊位置检测）
         bool is_bottleneck = false;
@@ -1446,14 +1503,17 @@ namespace Strategy
             if (test == -50) mp[y][x] = -9; // 标记陷阱拐角
         }
         
-        // 安全区评分 - 现在只对靠近边界的位置有轻微惩罚
+        // 安全区评分 - 考虑边界和蛇密度
         double safe_zone_score = safeZoneCenterScore(state, y, x);
+        
+        // 新增：战略位置评估 - 中后期更关注终点安全区
+        double strategic_score = evaluateStrategicPosition(state, y, x);
         
         // BFS评估
         double bfs_score = bfs(y, x, fy, fx, state);
         
-        // 整合评分，安全区评分不再包含中心偏好
-        return bfs_score + safe_zone_score;
+        // 整合评分
+        return bfs_score + safe_zone_score + strategic_score;
     }
 
     // 评估目标的价值和安全性
@@ -1791,6 +1851,18 @@ namespace Strategy
                 else if (margin <= 10) risk = -500;  // 中等风险
                 else risk = -200;  // 较低风险
             }
+            // 如果点在下一个安全区内，考虑收缩后的蛇密度风险
+            else {
+                // 增加对蛇密度的考虑
+                // 使用新的安全区密度评估函数
+                double density_risk = evaluateSafeZoneDensity(state, x, y);
+                
+                // 只保留蛇密度风险部分，基本安全区风险已经在上面处理
+                density_risk -= checkSafeZoneRisk(state, x, y);
+                
+                // 把蛇密度风险考虑进总体风险
+                risk += density_risk;
+            }
         }
         
         return risk;
@@ -1807,29 +1879,83 @@ namespace Strategy
         return {risk, is_dangerous};
     }
     
-    // 检查点位的蛇密度风险
+    // 检查点位的蛇密度风险 - 增强版，考虑收缩影响
     double checkSnakeDensityRisk(const GameState &state, const Point &point, int step_idx) {
         double risk = 0.0;
         int x = point.x, y = point.y;
+        
+        // 计算当前tick和收缩时间
+        int current_tick = MAX_TICKS - state.remaining_ticks;
+        int ticks_to_shrink = state.next_shrink_tick - current_tick;
+        int estimated_arrival_tick = current_tick + step_idx;
+        bool will_be_shrunk = estimated_arrival_tick >= state.next_shrink_tick;
+        
+        // 根据是否收缩选择安全区
+        SafeZoneBounds zone = will_be_shrunk ? state.next_safe_zone : state.current_safe_zone;
+        
+        // 计算安全区面积和收缩比例
+        double safe_zone_area_factor = 1.0;
+        if (will_be_shrunk) {
+            int current_area = (state.current_safe_zone.x_max - state.current_safe_zone.x_min + 1) *
+                              (state.current_safe_zone.y_max - state.current_safe_zone.y_min + 1);
+            int next_area = (state.next_safe_zone.x_max - state.next_safe_zone.x_min + 1) *
+                           (state.next_safe_zone.y_max - state.next_safe_zone.y_min + 1);
+            safe_zone_area_factor = (double)current_area / next_area;
+            
+            // 限制在合理范围内
+            safe_zone_area_factor = min(3.0, max(1.0, safe_zone_area_factor));
+        }
         
         // 计算附近的敌方蛇数量
         int nearby_snakes = 0;
         int very_close_snakes = 0;
         
+        // 动态调整检测范围 - 收缩后范围缩小
+        int close_radius = will_be_shrunk ? 2 : 3;
+        int nearby_radius = will_be_shrunk ? 4 : 6;
+        
         for (const auto &snake : state.snakes) {
             if (snake.id != MYID && snake.id != -1) {
                 const Point &enemy_head = snake.get_head();
-                int dist = abs(enemy_head.y - y) + abs(enemy_head.x - x);
                 
-                // 敌方蛇头在非常近的位置
-                if (dist <= 2) very_close_snakes++;
+                // 检查敌方蛇是否在将来的安全区内
+                bool enemy_in_future_safe_zone = 
+                    enemy_head.x >= state.next_safe_zone.x_min && 
+                    enemy_head.x <= state.next_safe_zone.x_max &&
+                    enemy_head.y >= state.next_safe_zone.y_min && 
+                    enemy_head.y <= state.next_safe_zone.y_max;
                 
-                // 敌方蛇头在较近的位置
-                if (dist <= 5) nearby_snakes++;
+                // 如果收缩后点和敌方蛇都在安全区内，增加风险
+                if (will_be_shrunk && 
+                    x >= state.next_safe_zone.x_min && x <= state.next_safe_zone.x_max &&
+                    y >= state.next_safe_zone.y_min && y <= state.next_safe_zone.y_max &&
+                    enemy_in_future_safe_zone) {
+                    
+                    int dist = abs(enemy_head.y - y) + abs(enemy_head.x - x);
+                    
+                    // 收缩后距离变近
+                    int adjusted_dist = (int)(dist / sqrt(safe_zone_area_factor));
+                    
+                    // 敌方蛇头在非常近的位置
+                    if (adjusted_dist <= close_radius) very_close_snakes++;
+                    
+                    // 敌方蛇头在较近的位置
+                    if (adjusted_dist <= nearby_radius) nearby_snakes++;
+                }
+                else {
+                    // 正常计算距离
+                    int dist = abs(enemy_head.y - y) + abs(enemy_head.x - x);
+                    
+                    // 敌方蛇头在非常近的位置
+                    if (dist <= close_radius) very_close_snakes++;
+                    
+                    // 敌方蛇头在较近的位置
+                    if (dist <= nearby_radius) nearby_snakes++;
+                }
             }
         }
         
-        // 计算风险值
+        // 计算基础风险值
         if (very_close_snakes > 0) {
             // 非常近的敌方蛇，高风险
             risk -= 800 * very_close_snakes;
@@ -1843,6 +1969,43 @@ namespace Strategy
         // 考虑步数因素 - 越早遇到敌方蛇风险越高
         if (risk < 0 && step_idx <= 3) {
             risk *= 1.5; // 前3步遇到敌方蛇，风险增加50%
+        }
+        
+        // 收缩因素 - 如果即将收缩且蛇密度高，风险更高
+        if (ticks_to_shrink >= 0 && ticks_to_shrink <= 20) {
+            // 计算所有蛇在未来安全区内的比例
+            int total_snakes = 0;
+            int snakes_in_future_zone = 0;
+            
+            for (const auto &snake : state.snakes) {
+                if (snake.id != -1) {
+                    total_snakes++;
+                    const Point &snake_head = snake.get_head();
+                    if (snake_head.x >= state.next_safe_zone.x_min && 
+                        snake_head.x <= state.next_safe_zone.x_max &&
+                        snake_head.y >= state.next_safe_zone.y_min && 
+                        snake_head.y <= state.next_safe_zone.y_max) {
+                        snakes_in_future_zone++;
+                    }
+                }
+            }
+            
+            // 如果未来安全区内蛇的比例高，增加风险
+            if (total_snakes > 0) {
+                double density_factor = (double)snakes_in_future_zone / total_snakes * safe_zone_area_factor;
+                
+                // 密度越高，风险越大
+                if (density_factor > 1.5) {
+                    risk -= (density_factor - 1.5) * 300;
+                }
+                
+                // 收缩时间越近，风险越大
+                if (ticks_to_shrink <= 5) {
+                    risk *= 1.5;
+                } else if (ticks_to_shrink <= 10) {
+                    risk *= 1.3;
+                }
+            }
         }
         
         return risk;
@@ -1893,8 +2056,22 @@ namespace Strategy
             auto [terrain_risk, is_dangerous_terrain] = checkTerrainRisk(state, point);
             point_safety += terrain_risk;
             
-            // 3. 检查蛇密度风险
+            // 3. 检查蛇密度风险 - 增强版，考虑收缩因素
             double snake_density_risk = checkSnakeDensityRisk(state, point, i);
+            
+            // 对于安全区收缩相关的风险，进行更全面的评估
+            int current_tick = MAX_TICKS - state.remaining_ticks;
+            int ticks_to_shrink = state.next_shrink_tick - current_tick;
+            
+            // 如果路径点接近收缩时间，增加额外的蛇密度评估
+            if (ticks_to_shrink >= 0 && ticks_to_shrink <= 20 && i >= ticks_to_shrink) {
+                // 使用evaluateSafeZoneDensity评估收缩后的蛇密度风险
+                double zone_density_risk = evaluateSafeZoneDensity(state, point.x, point.y);
+                
+                // 结合两种风险评估
+                snake_density_risk = min(snake_density_risk, zone_density_risk);
+            }
+            
             point_safety += snake_density_risk;
             
             // 4. 特殊地形风险(如陷阱)
@@ -1922,6 +2099,211 @@ namespace Strategy
         }
         
         return result;
+    }
+
+    // 添加评估安全区密度函数 - 计算收缩后蛇密度的变化
+    double evaluateSafeZoneDensity(const GameState &state, int x, int y) {
+        double score = 0;
+        
+        // 使用现有函数评估基本安全区风险
+        score += checkSafeZoneRisk(state, x, y);
+        
+        // 计算当前蛇密度
+        int current_tick = MAX_TICKS - state.remaining_ticks;
+        int ticks_to_shrink = state.next_shrink_tick - current_tick;
+        
+        // 如果即将收缩（20个tick内）
+        if (ticks_to_shrink >= 0 && ticks_to_shrink <= 20) {
+            // 检查位置是否在下一个安全区内
+            if (x >= state.next_safe_zone.x_min && x <= state.next_safe_zone.x_max &&
+                y >= state.next_safe_zone.y_min && y <= state.next_safe_zone.y_max) {
+                
+                // 计算当前安全区和下一个安全区的面积
+                int current_area = (state.current_safe_zone.x_max - state.current_safe_zone.x_min + 1) *
+                                  (state.current_safe_zone.y_max - state.current_safe_zone.y_min + 1);
+                int next_area = (state.next_safe_zone.x_max - state.next_safe_zone.x_min + 1) *
+                               (state.next_safe_zone.y_max - state.next_safe_zone.y_min + 1);
+                
+                // 收缩比例
+                double shrink_ratio = (double)next_area / current_area;
+                
+                // 计算收缩后该点附近的蛇密度
+                int current_snakes = 0;
+                int future_snakes = 0;
+                int proximity_radius = 5; // 附近区域半径
+                
+                for (const auto &snake : state.snakes) {
+                    if (snake.id == -1) continue; // 跳过无效蛇
+                    
+                    const Point &snake_head = snake.get_head();
+                    int dist = abs(snake_head.y - y) + abs(snake_head.x - x);
+                    
+                    // 计算当前密度
+                    if (dist <= proximity_radius) {
+                        current_snakes++;
+                    }
+                    
+                    // 预测收缩后的密度（如果蛇在下一个安全区内）
+                    if (snake_head.x >= state.next_safe_zone.x_min && 
+                        snake_head.x <= state.next_safe_zone.x_max &&
+                        snake_head.y >= state.next_safe_zone.y_min && 
+                        snake_head.y <= state.next_safe_zone.y_max) {
+                        
+                        // 收缩后距离会变小，按比例计算
+                        int future_dist = (int)(dist * sqrt(shrink_ratio));
+                        if (future_dist <= proximity_radius) {
+                            future_snakes++;
+                        }
+                    }
+                }
+                
+                // 密度增加带来的风险
+                double density_risk = (future_snakes - current_snakes) * 200;
+                
+                // 如果收缩后蛇密度显著增加，增加额外风险
+                if (future_snakes > current_snakes + 1) {
+                    density_risk += (future_snakes - current_snakes - 1) * 300;
+                }
+                
+                // 收缩时间越近，风险越高
+                if (ticks_to_shrink <= 5) {
+                    density_risk *= 2;
+                } else if (ticks_to_shrink <= 10) {
+                    density_risk *= 1.5;
+                }
+                
+                score -= density_risk;
+            }
+        }
+        
+        return score;
+    }
+    
+    // 新增：评估战略位置函数 - 为中后期游戏提供更智能的位置评估
+    double evaluateStrategicPosition(const GameState &state, int y, int x) {
+        double score = 0;
+        int current_tick = MAX_TICKS - state.remaining_ticks;
+        
+        // 游戏阶段判断
+        bool is_mid_game = current_tick >= 100 && current_tick < 180;
+        bool is_late_game = current_tick >= 180;
+        
+        // 如果是游戏初期，直接返回0（不影响）
+        if (!is_mid_game && !is_late_game) {
+            return score;
+        }
+        
+        // 获取当前和将来的安全区
+        SafeZoneBounds current_zone = state.current_safe_zone;
+        SafeZoneBounds next_zone = state.next_safe_zone;
+        SafeZoneBounds final_zone = state.final_safe_zone;
+        
+        // 计算当前点到最终安全区中心的距离
+        int final_center_x = (final_zone.x_min + final_zone.x_max) / 2;
+        int final_center_y = (final_zone.y_min + final_zone.y_max) / 2;
+        int dist_to_final_center = abs(y - final_center_y) + abs(x - final_center_x);
+        
+        // 计算各个安全区的面积
+        int current_area = (current_zone.x_max - current_zone.x_min + 1) * 
+                          (current_zone.y_max - current_zone.y_min + 1);
+        int next_area = (next_zone.x_max - next_zone.x_min + 1) * 
+                       (next_zone.y_max - next_zone.y_min + 1);
+        int final_area = (final_zone.x_max - final_zone.x_min + 1) * 
+                        (final_zone.y_max - final_zone.y_min + 1);
+        
+        // 中期策略：开始关注下一个安全区
+        if (is_mid_game) {
+            // 距离下一个安全区中心越近越好
+            int next_center_x = (next_zone.x_min + next_zone.x_max) / 2;
+            int next_center_y = (next_zone.y_min + next_zone.y_max) / 2;
+            int dist_to_next_center = abs(y - next_center_y) + abs(x - next_center_x);
+            
+            // 在下一个安全区内的位置更好
+            if (x >= next_zone.x_min && x <= next_zone.x_max &&
+                y >= next_zone.y_min && y <= next_zone.y_max) {
+                score += 150;
+                
+                // 在下一个安全区内，离中心越近越好（避免边缘）
+                double center_bonus = 100 - min(100.0, dist_to_next_center * 15.0);
+                score += center_bonus;
+            }
+            // 如果在当前安全区但不在下一个安全区，看距离有多远
+            else if (x >= current_zone.x_min && x <= current_zone.x_max &&
+                     y >= current_zone.y_min && y <= current_zone.y_max) {
+                // 计算到下一个安全区边界的最短距离
+                int dist_to_next_zone = max(0, min({
+                    x - next_zone.x_min,
+                    next_zone.x_max - x,
+                    y - next_zone.y_min,
+                    next_zone.y_max - y
+                }));
+                
+                // 距离越远，惩罚越大
+                score -= dist_to_next_zone * 50;
+            }
+            
+            // 中期也开始考虑最终安全区
+            // 但权重较小
+            if (dist_to_final_center < current_area / 10) {
+                score += 50; // 额外奖励离最终安全区中心近的位置
+            }
+        }
+        
+        // 后期策略：高度重视最终安全区
+        if (is_late_game) {
+            // 在最终安全区内的位置极其重要
+            if (x >= final_zone.x_min && x <= final_zone.x_max &&
+                y >= final_zone.y_min && y <= final_zone.y_max) {
+                score += 500;
+                
+                // 在最终安全区内，离中心越近越好
+                double center_bonus = 300 - min(300.0, dist_to_final_center * 30.0);
+                score += center_bonus;
+                
+                // 额外考虑蛇密度
+                int snakes_in_final_zone = 0;
+                for (const auto &snake : state.snakes) {
+                    if (snake.id != -1) {
+                        const Point &snake_head = snake.get_head();
+                        if (snake_head.x >= final_zone.x_min && 
+                            snake_head.x <= final_zone.x_max &&
+                            snake_head.y >= final_zone.y_min && 
+                            snake_head.y <= final_zone.y_max) {
+                            snakes_in_final_zone++;
+                        }
+                    }
+                }
+                
+                // 密度越高风险越大
+                double density = (double)snakes_in_final_zone / final_area * 100;
+                if (density > 10) { // 10%阈值
+                    score -= (density - 10) * 20;
+                }
+            }
+            // 不在最终安全区，但在下一个安全区
+            else if (x >= next_zone.x_min && x <= next_zone.x_max &&
+                     y >= next_zone.y_min && y <= next_zone.y_max) {
+                score += 200;
+                
+                // 优先考虑向最终安全区移动的方向
+                int dist_to_final_zone = min({
+                    abs(x - final_zone.x_min),
+                    abs(x - final_zone.x_max),
+                    abs(y - final_zone.y_min),
+                    abs(y - final_zone.y_max)
+                });
+                
+                // 距离最终安全区越近越好
+                score -= dist_to_final_zone * 30;
+            }
+            // 既不在最终也不在下一个安全区
+            else {
+                // 高风险情况
+                score -= 500;
+            }
+        }
+        
+        return score;
     }
 }
 
