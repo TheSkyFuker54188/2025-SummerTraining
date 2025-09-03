@@ -2947,14 +2947,20 @@ bool enhancedFoodProcessByPriority(const GameState &state, int minValue, int max
         // 调整距离权重，较近食物更高权重
         double distance_weight = self.length < 6 ? 0.8 : 0.6; // 短蛇更重视近距离食物
         double distance_factor = pow(1.0 - (double)dist / maxRange, 1.5); // 使用指数函数增强近距离偏好
+        if (dist == 1) distance_factor *= 1.8; // 紧邻食物(dist=1)显著提升权重
         double cluster_bonus = nearby_food_count * 0.15; // 食物密集区加分
         
         // 3. 改进: 竞争分析
         double competition_penalty = 0;
-        for (const auto &snake : state.snakes) {
-            if (snake.id != MYID && snake.id != -1) {
-                int enemy_dist = abs(snake.get_head().y - item.pos.y) + abs(snake.get_head().x - item.pos.x);
-                if (enemy_dist < dist * 1.2) { // 敌蛇更近或距离相近
+        
+        // 紧邻食物无竞争惩罚，确保优先获取
+        if (dist == 1) {
+            competition_penalty = 0;
+        } else {
+            for (const auto &snake : state.snakes) {
+                if (snake.id != MYID && snake.id != -1) {
+                    int enemy_dist = abs(snake.get_head().y - item.pos.y) + abs(snake.get_head().x - item.pos.x);
+                    if (enemy_dist < dist * 1.2) { // 敌蛇更近或距离相近
                     // 评估我方蛇在竞争中的优势
                     bool has_length_advantage = self.length > snake.length + 2;
                     bool has_position_advantage = Strategy::countSafeExits(state, item.pos) >= 2;
@@ -2966,6 +2972,7 @@ bool enhancedFoodProcessByPriority(const GameState &state, int minValue, int max
                         competition_penalty += 0.2; // 部分劣势
                 }
             }
+        }
         }
         
         // 应用竞争惩罚
@@ -2995,13 +3002,26 @@ bool enhancedFoodProcessByPriority(const GameState &state, int minValue, int max
         // 计算前往食物的首选方向
         vector<Direction> preferred_dirs;
         
-        // 水平方向
-    if (head.x > best_food.pos.x) preferred_dirs.push_back(Direction::LEFT);
-    else if (head.x < best_food.pos.x) preferred_dirs.push_back(Direction::RIGHT);
-        
-        // 垂直方向
-    if (head.y > best_food.pos.y) preferred_dirs.push_back(Direction::UP);
-    else if (head.y < best_food.pos.y) preferred_dirs.push_back(Direction::DOWN);
+            // 计算曼哈顿距离的各分量
+    int dx = abs(head.x - best_food.pos.x);
+    int dy = abs(head.y - best_food.pos.y);
+    
+    // 优先选择能消除更多距离的方向
+    if (dx >= dy) {
+        // 水平距离更大或相等，先处理水平
+        if (head.x > best_food.pos.x) preferred_dirs.push_back(Direction::LEFT);
+        else if (head.x < best_food.pos.x) preferred_dirs.push_back(Direction::RIGHT);
+      
+        if (head.y > best_food.pos.y) preferred_dirs.push_back(Direction::UP);
+        else if (head.y < best_food.pos.y) preferred_dirs.push_back(Direction::DOWN);
+    } else {
+        // 垂直距离更大，先处理垂直
+        if (head.y > best_food.pos.y) preferred_dirs.push_back(Direction::UP);
+        else if (head.y < best_food.pos.y) preferred_dirs.push_back(Direction::DOWN);
+      
+        if (head.x > best_food.pos.x) preferred_dirs.push_back(Direction::LEFT);
+        else if (head.x < best_food.pos.x) preferred_dirs.push_back(Direction::RIGHT);
+    }
     
     // 获取路径安全性评估
     auto best_path_safety = Strategy::evaluatePathSafety(state, head, best_food.pos);
@@ -3052,8 +3072,21 @@ bool enhancedFoodProcessByPriority(const GameState &state, int minValue, int max
         }
     }
     
-    // A*失败时退回到传统方法
-    dir = chooseBestDirection(state, preferred_dirs);
+    // 对于紧邻食物，A*失败时尝试直接移动
+    if (abs(head.y - best_food.pos.y) + abs(head.x - best_food.pos.x) == 1 && !preferred_dirs.empty()) {
+        dir = preferred_dirs[0]; // 紧邻食物时直接使用首选方向
+      
+        // 检查该方向是否合法
+        unordered_set<Direction> check_illegals = illegalMove(state);
+        if (check_illegals.count(dir) > 0) {
+            // 如果不合法，退回到传统方法
+            dir = chooseBestDirection(state, preferred_dirs);
+        }
+    } else {
+        // 非紧邻食物，使用传统方法
+        dir = chooseBestDirection(state, preferred_dirs);
+    }
+    
     if (dir != Direction::UP || state.get_self().direction == 1) {
         moveDirection = dir;
         
@@ -3552,6 +3585,7 @@ bool processFoodWithDynamicPriority(const GameState &state, Direction& moveDirec
         // 调整距离权重，较近食物更高权重
         double distance_weight = self.length < 6 ? 0.8 : 0.6; // 短蛇更重视近距离食物
         double distance_factor = pow(1.0 - (double)dist / 12.0, 1.5); // 使用指数函数增强近距离偏好
+        if (dist == 1) distance_factor *= 1.8; // 紧邻食物(dist=1)显著提升权重
         double cluster_bonus = nearby_food_count * 0.15; // 食物密集区加分
         
         // 3. 改进: 竞争分析 - 对尸体优化竞争评估
@@ -3562,6 +3596,11 @@ bool processFoodWithDynamicPriority(const GameState &state, Direction& moveDirec
               
                 // 针对尸体的特殊竞争评估
                 if (item.value > 0) { // 尸体
+                    // 紧邻尸体无竞争惩罚，确保优先获取
+                    if (dist == 1) {
+                        competition_penalty = 0; 
+                        continue; // 跳过后续竞争评估
+                    }
                     // 计算距离差异 - 正值表示我们更近
                     int distance_advantage = enemy_dist - dist;
                   
@@ -3646,16 +3685,29 @@ bool processFoodWithDynamicPriority(const GameState &state, Direction& moveDirec
     // 选择最佳食物
     const Item &best_food = all_candidates[0].first;
     
-    // 计算前往食物的首选方向
-    vector<Direction> preferred_dirs;
-    
-    // 水平方向
-    if (head.x > best_food.pos.x) preferred_dirs.push_back(Direction::LEFT);
-    else if (head.x < best_food.pos.x) preferred_dirs.push_back(Direction::RIGHT);
-    
-    // 垂直方向
-    if (head.y > best_food.pos.y) preferred_dirs.push_back(Direction::UP);
-    else if (head.y < best_food.pos.y) preferred_dirs.push_back(Direction::DOWN);
+            // 计算前往食物的首选方向
+        vector<Direction> preferred_dirs;
+        
+        // 计算曼哈顿距离的各分量
+        int dx = abs(head.x - best_food.pos.x);
+        int dy = abs(head.y - best_food.pos.y);
+        
+        // 优先选择能消除更多距离的方向
+        if (dx >= dy) {
+            // 水平距离更大或相等，先处理水平
+            if (head.x > best_food.pos.x) preferred_dirs.push_back(Direction::LEFT);
+            else if (head.x < best_food.pos.x) preferred_dirs.push_back(Direction::RIGHT);
+          
+            if (head.y > best_food.pos.y) preferred_dirs.push_back(Direction::UP);
+            else if (head.y < best_food.pos.y) preferred_dirs.push_back(Direction::DOWN);
+        } else {
+            // 垂直距离更大，先处理垂直
+            if (head.y > best_food.pos.y) preferred_dirs.push_back(Direction::UP);
+            else if (head.y < best_food.pos.y) preferred_dirs.push_back(Direction::DOWN);
+          
+            if (head.x > best_food.pos.x) preferred_dirs.push_back(Direction::LEFT);
+            else if (head.x < best_food.pos.x) preferred_dirs.push_back(Direction::RIGHT);
+        }
     
     // 护盾策略：仅在必死情况下使用
     bool should_use_shield = false;
