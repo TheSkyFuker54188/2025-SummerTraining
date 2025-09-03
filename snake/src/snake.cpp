@@ -1148,6 +1148,31 @@ namespace Strategy
         result.exit_count = visited.size();
         result.depth = max_depth;
         
+        // 检测角落 - 增强型
+        bool is_corner = false;
+        int wall_directions = 0;
+        Direction last_wall_dir;
+        
+        // 计算周围墙的方向
+        for (auto dir : validDirections) {
+            const auto [ny, nx] = Utils::nextPos({y, x}, dir);
+            if (!Utils::boundCheck(ny, nx) || map_item[ny][nx] == -4) {
+                wall_directions++;
+                last_wall_dir = dir;
+            }
+        }
+        
+        // 如果有两个及以上方向是墙，检查是否形成角落
+        if (wall_directions >= 2) {
+            is_corner = true;
+            result.risk_score -= 600; // 角落惩罚
+            
+            // 如果是死角(三面墙)，给予更严厉的惩罚
+            if (wall_directions >= 3) {
+                result.risk_score -= 1200;
+            }
+        }
+        
         // 检测死胡同：深度大于宽度且空间有限
         if (max_depth > 3 && max_width < 3 && visited.size() < 12) {
             result.is_dead_end = true;
@@ -1366,6 +1391,17 @@ namespace Strategy
         if (dist_to_border <= 3) {
             score -= 5.0 * (3 - dist_to_border);
         }
+        
+        // 增强中心区域偏好 - 计算到区域中心的距离
+        int center_x = (zone.x_min + zone.x_max) / 2;
+        int center_y = (zone.y_min + zone.y_max) / 2;
+        int dist_to_center = abs(x - center_x) + abs(y - center_y);
+        
+        // 区域直径
+        int zone_diameter = max(zone.x_max - zone.x_min, zone.y_max - zone.y_min);
+        // 根据到中心的距离比例给予奖励，越靠近中心奖励越高
+        double center_bonus = 50.0 * (1.0 - min(1.0, (double)dist_to_center / (zone_diameter / 2)));
+        score += center_bonus;
         
         // 评估该位置的蛇密度
         int nearby_snakes = 0;
@@ -2327,6 +2363,42 @@ namespace Strategy
         return {};
     }
     
+    // 计算点位的开阔度
+    double calculateOpennessScore(const Point &point) {
+        double openness_score = 0;
+        int open_cells = 0;
+        int max_range = 3; // 检查周围3格范围内的开阔度
+        
+        // 使用BFS计算周围可达点数量
+        unordered_set<string> visited;
+        queue<pair<Point, int>> q;
+        q.push({point, 0});
+        visited.insert(Utils::idx2str({point.y, point.x}));
+        
+        while (!q.empty()) {
+            auto [curr, depth] = q.front(); q.pop();
+            if (depth > max_range) continue;
+            
+            open_cells++;
+            
+            for (auto dir : validDirections) {
+                const auto [ny, nx] = Utils::nextPos({curr.y, curr.x}, dir);
+                string key = Utils::idx2str({ny, nx});
+                
+                if (Utils::boundCheck(ny, nx) && map_item[ny][nx] != -4 && map_snake[ny][nx] != -5 && 
+                    visited.find(key) == visited.end()) {
+                    q.push({{ny, nx}, depth + 1});
+                    visited.insert(key);
+                }
+            }
+        }
+        
+        // 根据开阔程度评分
+        int max_possible_cells = (2*max_range+1) * (2*max_range+1);
+        openness_score = 30.0 * ((double)open_cells / max_possible_cells);
+        return openness_score;
+    }
+
     // 检查点位的安全区收缩风险
     double checkPointSafeZoneRisk(const GameState &state, const Point &point, int step_idx) {
         int x = point.x, y = point.y;
@@ -2570,6 +2642,10 @@ namespace Strategy
             // 2. 检查死胡同/瓶颈风险
             auto [terrain_risk, is_dangerous_terrain] = checkTerrainRisk(state, point);
             point_safety += terrain_risk;
+            
+            // 2.5 增加战略移动空间评估 - 计算点位开阔度
+            double openness_score = calculateOpennessScore(point);
+            point_safety += openness_score; // 开阔区域加分
             
             // 3. 检查蛇密度风险 - 增强版，考虑收缩因素
             double snake_density_risk = checkSnakeDensityRisk(state, point, i);
@@ -3655,8 +3731,32 @@ bool processFoodWithDynamicPriority(const GameState &state, Direction& moveDirec
         // 应用竞争惩罚 - 确保至少保留30%价值
         double competition_factor = max(0.3, 1.0 - competition_penalty);
         
-        // 最终价值计算
+        // 计算食物位置的战略价值
+        int zone_width = state.current_safe_zone.x_max - state.current_safe_zone.x_min;
+        int zone_height = state.current_safe_zone.y_max - state.current_safe_zone.y_min;
+        int center_x = (state.current_safe_zone.x_min + state.current_safe_zone.x_max) / 2;
+        int center_y = (state.current_safe_zone.y_min + state.current_safe_zone.y_max) / 2;
+        
+        // 计算食物到中心的距离占区域半径的比例
+        double dist_to_center = abs(item.pos.x - center_x) + abs(item.pos.y - center_y);
+        double center_factor = max(0.0, 1.0 - dist_to_center / (max(zone_width, zone_height) / 2.0));
+        
+        // 计算食物到边缘的距离
+        int min_border_dist = min({
+            item.pos.x - state.current_safe_zone.x_min,
+            state.current_safe_zone.x_max - item.pos.x,
+            item.pos.y - state.current_safe_zone.y_min,
+            state.current_safe_zone.y_max - item.pos.y
+        });
+        double edge_penalty = min_border_dist <= 2 ? 0.8 : 1.0; // 靠近边缘降低20%价值
+        
+        // 计算最终战略系数
+        double strategic_factor = center_factor * edge_penalty;
+        
+        // 最终价值计算 - 增加战略价值考量
         double final_value = adjusted_value * (1.0 + distance_factor * distance_weight + cluster_bonus) * competition_factor;
+        // 增加最多30%的中心奖励
+        final_value *= (1.0 + center_factor * 0.3);
         
         // 应用动态优先级
         double priority_multiplier = 0.5; // 默认低优先级
