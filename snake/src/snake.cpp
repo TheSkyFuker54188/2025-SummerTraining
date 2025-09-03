@@ -256,7 +256,7 @@ namespace Strategy {
         return bfs_score + safe_zone_score + strategic_score + food_value;
     }
 
-    // 新增：护盾使用价值评估
+    // 严格限制护盾使用条件，只在必死无疑的情况下使用
     bool shouldUseShield(const GameState &state, double path_safety_score, double target_value, 
                          bool is_emergency = false, bool is_survival = false) {
         const auto &self = state.get_self();
@@ -266,25 +266,17 @@ namespace Strategy {
             return false; // 无法使用护盾
         }
         
-        // 1. 生死攸关情形 - 优先级最高
+        // 最后5tick内不使用护盾
+        if (state.remaining_ticks <= 5) {
+            return false;
+        }
+        
+        // 1. 仅在生死攸关情形使用
         if (is_survival) {
-            return true; // 生死存亡时无条件使用
+            return true; // 生死存亡时才使用
         }
         
-        // 2. 后期策略调整 - 高分后期更保守
-        bool is_late_game = state.remaining_ticks < 80;
-        if (is_late_game && self.score >= 60) {
-            // 后期高分时，只为极高价值目标开盾(>= 50)
-            if (target_value < 50) {
-                return false;
-            }
-        }
-        
-        // 3. 目标价值评估 - 计算预期收益与护盾成本比较
-        double risk_factor = 1.0 - min(1.0, -path_safety_score / 1500.0);
-        double expected_gain = target_value * risk_factor;
-        
-        // 4. 安全区收缩紧急情况评估
+        // 2. 安全区收缩导致的绝境
         if (is_emergency) {
             int current_tick = MAX_TICKS - state.remaining_ticks;
             int ticks_to_shrink = state.next_shrink_tick - current_tick;
@@ -305,19 +297,19 @@ namespace Strategy {
                 dist_to_safe_zone = min(dist_to_safe_zone, head.y - state.next_safe_zone.y_max);
             }
             
-            // 如果能安全到达，不使用护盾
-            if (dist_to_safe_zone < ticks_to_shrink - 2) {
-                return false;
+            // 仅当肯定无法安全到达安全区时才使用护盾
+            if (dist_to_safe_zone <= ticks_to_shrink - 1) {
+                return false; // 能安全到达，不使用护盾
             }
             
-            // 如果无法安全到达，且时间很紧，使用护盾
-            if (ticks_to_shrink <= 5) {
+            // 如果无法到达且即将收缩，认为是绝境
+            if (ticks_to_shrink <= 2) {
                 return true;
             }
         }
         
-        // 5. 最终决策：预期收益必须显著高于护盾成本(20)
-        return expected_gain > 30; // 只有当预期收益显著高于护盾成本时才使用
+        // 3. 其他情况不使用护盾，哪怕是高价值目标
+        return false;
     }
 }
 
@@ -2891,7 +2883,7 @@ bool enhancedFoodProcessByPriority(const GameState &state, int minValue, int max
         }
         
         // 计算距离
-        int dist = abs(head.y - item.pos.y) + abs(head.x - item.pos.x);
+            int dist = abs(head.y - item.pos.y) + abs(head.x - item.pos.x);
         if (dist > maxRange) {
             continue;  // 跳过超出范围的食物
         }
@@ -2961,15 +2953,15 @@ bool enhancedFoodProcessByPriority(const GameState &state, int minValue, int max
     
     // 选择最佳食物
     const Item &best_food = candidate_foods[0].first;
-    
-    // 计算前往食物的首选方向
-    vector<Direction> preferred_dirs;
-    
-    // 水平方向
+        
+        // 计算前往食物的首选方向
+        vector<Direction> preferred_dirs;
+        
+        // 水平方向
     if (head.x > best_food.pos.x) preferred_dirs.push_back(Direction::LEFT);
     else if (head.x < best_food.pos.x) preferred_dirs.push_back(Direction::RIGHT);
-    
-    // 垂直方向
+        
+        // 垂直方向
     if (head.y > best_food.pos.y) preferred_dirs.push_back(Direction::UP);
     else if (head.y < best_food.pos.y) preferred_dirs.push_back(Direction::DOWN);
     
@@ -2979,15 +2971,16 @@ bool enhancedFoodProcessByPriority(const GameState &state, int minValue, int max
     // 使用优化后的护盾决策 - 根据食物价值和路径安全性决定是否使用护盾
     bool should_use_shield = false;
     
-    // 只有当食物价值足够高且路径有风险时才考虑使用护盾
-    if (!best_path_safety.is_safe && best_path_safety.safety_score > config.shield_activation_threshold) {
-        // 使用新的护盾评估函数
+    // 护盾策略：仅在必死情况下使用
+    unordered_set<Direction> illegals = illegalMove(state);
+    if (illegals.size() >= 3) { // 至少有3个方向不可走
+        // 使用新的护盾评估函数，但仅考虑生存因素
         should_use_shield = Strategy::shouldUseShield(
             state, 
-            best_path_safety.safety_score, 
-            best_food.value,
+            -2000, // 极高风险
+            0,     // 不考虑食物价值
             false, // 不是安全区紧急情况
-            false  // 不是生死攸关情形
+            true   // 是生死攸关情形
         );
     }
     
@@ -3026,10 +3019,14 @@ bool enhancedFoodProcessByPriority(const GameState &state, int minValue, int max
     if (dir != Direction::UP || state.get_self().direction == 1) {
         moveDirection = dir;
         
-        // 如果应该使用护盾，将其信息传递出去
-        if (should_use_shield) {
-            moveDirection = Direction::UP; // 特殊标记
-            return false; // 特殊返回值，需要在外部处理护盾
+        // 只在必死情况下使用护盾，且不在最后5tick
+        if (should_use_shield && state.remaining_ticks > 5) {
+            // 检查是否确实无路可走
+            unordered_set<Direction> all_illegals = illegalMove(state);
+            if (all_illegals.size() >= 3) { // 只有1个方向可走或没有方向可走
+                moveDirection = Direction::UP; // 特殊标记
+                return false; // 特殊返回值，需要在外部处理护盾
+            }
         }
         
         return true;
@@ -3116,28 +3113,45 @@ int judge(const GameState &state)
                 
                 // 如果下一步是合法的
                 if (illegals.count(move_dir) == 0) {
-                    // 决定是否需要开启护盾
-                    if (should_use_shield && self.shield_cd == 0 && self.score >= 20) {
-                        return SHIELD_COMMAND;
+                    // 即使有宝箱/钥匙，也只在必死情况下使用护盾，且不在最后5tick
+                    if (should_use_shield && self.shield_cd == 0 && self.score >= 20 && state.remaining_ticks > 5) {
+                        // 检查是否确实是生存必要的情况
+                        bool is_truly_necessary = false;
+                        
+                        // 计算其他方向是否全部导致死亡
+                        unordered_set<Direction> illegals = illegalMove(state);
+                        int legal_dirs = 4 - illegals.size();
+                        
+                        if (legal_dirs <= 1) {
+                            is_truly_necessary = true; // 只有这一个方向或者无路可走
+                        }
+                        
+                        if (is_truly_necessary) {
+                            return SHIELD_COMMAND;
+                        }
                     }
                     return Utils::dir2num(move_dir);
                 }
                 
                 // 如果A*路径的第一步不合法，回退到传统方法
-                // 计算前往目标的首选方向
-                vector<Direction> preferred_dirs;
-                
+        // 计算前往目标的首选方向
+        vector<Direction> preferred_dirs;
+        
                 // 添加首选方向
-                if (head.x > current_target.x) preferred_dirs.push_back(Direction::LEFT);
-                else if (head.x < current_target.x) preferred_dirs.push_back(Direction::RIGHT);
+        if (head.x > current_target.x) preferred_dirs.push_back(Direction::LEFT);
+        else if (head.x < current_target.x) preferred_dirs.push_back(Direction::RIGHT);
                 if (head.y > current_target.y) preferred_dirs.push_back(Direction::UP);
                 else if (head.y < current_target.y) preferred_dirs.push_back(Direction::DOWN);
                 
                 Direction best_dir = chooseBestDirection(state, preferred_dirs);
                 if (best_dir != Direction::UP || state.get_self().direction == 1) {
-                    // 如果需要使用护盾并且条件允许
-                    if (should_use_shield && self.shield_cd == 0 && self.score >= 20) {
-                        return SHIELD_COMMAND;
+                    // 只在必死情况下使用护盾
+                    if (should_use_shield && self.shield_cd == 0 && self.score >= 20 && state.remaining_ticks > 5) {
+                        // 检查是否确实无路可走
+                        unordered_set<Direction> all_illegals = illegalMove(state);
+                        if (all_illegals.size() >= 3) { // 至少有3个方向不可走
+                            return SHIELD_COMMAND;
+                        }
                     }
                     return Utils::dir2num(best_dir);
                 }
@@ -3154,9 +3168,13 @@ int judge(const GameState &state)
                 // 使用增强的方向选择
         Direction best_dir = chooseBestDirection(state, preferred_dirs);
         if (best_dir != Direction::UP || state.get_self().direction == 1) {
-                    // 如果需要使用护盾并且条件允许
-                    if (should_use_shield && self.shield_cd == 0 && self.score >= 20) {
-                        return SHIELD_COMMAND;
+                    // 只在必死情况下使用护盾
+                    if (should_use_shield && self.shield_cd == 0 && self.score >= 20 && state.remaining_ticks > 5) {
+                        // 检查是否确实无路可走
+                        unordered_set<Direction> all_illegals = illegalMove(state);
+                        if (all_illegals.size() >= 3) { // 至少有3个方向不可走
+                            return SHIELD_COMMAND;
+                        }
                     }
             return Utils::dir2num(best_dir);
                 }
@@ -3166,26 +3184,22 @@ int judge(const GameState &state)
     
     // 使用增强版食物处理 - 优先处理不同价值的食物
     Direction food_dir = Direction::UP;  // 初始化为默认值
-    
+            
     // 第一优先级：极近距离高价值尸体 (<=4格，价值>=5)
     if (enhancedFoodProcessByPriority(state, 5, 4, food_dir)) {
         return Utils::dir2num(food_dir);
     }
     
-    // 检查是否需要使用护盾获取高价值食物
-    if (food_dir == Direction::UP && self.shield_cd == 0 && self.score >= 20) {
-        return SHIELD_COMMAND;
-    }
+    // 不为高价值食物使用护盾，除非是必死无疑的情况，且不在最后5tick
+    // (已由shouldUseShield函数控制，此处不需要再开盾)
     
     // 特殊情况：极近距离的普通食物 (<=2格，任意价值>0)
     if (enhancedFoodProcessByPriority(state, 1, 2, food_dir)) {
         return Utils::dir2num(food_dir);
     }
     
-    // 检查是否需要使用护盾获取食物
-    if (food_dir == Direction::UP && self.shield_cd == 0 && self.score >= 20) {
-        return SHIELD_COMMAND;
-    }
+    // 不为普通食物使用护盾
+    // (已由shouldUseShield函数控制，此处不需要再开盾)
     
     // 第二优先级：近距离更高价值尸体 (<=6格，价值>=8)
     if (enhancedFoodProcessByPriority(state, 8, 6, food_dir)) {
@@ -3244,20 +3258,20 @@ int judge(const GameState &state)
                         dist_to_safe_zone = min(dist_to_safe_zone, head.y - state.next_safe_zone.y_max);
                     }
                     
-                    // 如果距离收缩时间很近且无法安全到达，考虑使用护盾
+                    // 安全区收缩极端情况：只在收缩点到达时且无法安全到达时使用护盾
                     bool should_use_shield = false;
-                    if (is_emergency_shrink) {
-                        // 使用新的护盾评估函数
-                        should_use_shield = Strategy::shouldUseShield(
-                            state, 
-                            -1000, // 假设安全区收缩风险较高
-                            50,    // 安全区收缩的生存价值很高
-                            true,  // 是安全区紧急情况
-                            false  // 不是生死攸关情形
-                        );
+                    if (is_emergency_shrink && ticks_to_shrink <= 1) {
+                        // 计算是否真的无法到达安全区
+                        if (dist_to_safe_zone > ticks_to_shrink + 1) {
+                            // 检查是否有合法路径
+                            unordered_set<Direction> illegals = illegalMove(state);
+                            if (illegals.size() >= 3) { // 几乎无路可走
+                                should_use_shield = true;
+                            }
+                        }
                     }
                     
-                    if (should_use_shield && self.shield_cd == 0 && self.score >= 20) {
+                    if (should_use_shield && self.shield_cd == 0 && self.score >= 20 && state.remaining_ticks > 5) {
                         return SHIELD_COMMAND;
                     }
                     
@@ -3283,8 +3297,8 @@ int judge(const GameState &state)
     }
     
     if (legalMoves.empty()) {
-        // 如果没有合法移动但可以开护盾 - 生死攸关情况，保留无条件使用护盾
-        if (self.shield_cd == 0 && self.score >= 20) {
+        // 如果没有合法移动但可以开护盾 - 生死攸关情况，但仍检查是否在最后5tick
+        if (self.shield_cd == 0 && self.score >= 20 && state.remaining_ticks > 5) {
             return SHIELD_COMMAND;
         }
         return Utils::dir2num(Direction::UP); // 默认上方向
