@@ -89,6 +89,9 @@ namespace Strategy {
     vector<vector<int>> makeMapSnapshot(const GameState &state);
     double simulateMovementRisk(const GameState &state, int start_y, int start_x, int steps);
     
+    // 添加TerrainAnalysis结构体前向声明和analyzeTerrainRisk函数声明
+    TerrainAnalysis analyzeTerrainRisk(const GameState &state, int y, int x);
+    
     // 新增路径安全评估框架相关声明
     struct PathSafetyEvaluation {
         double safety_score;    // 综合安全评分
@@ -1281,9 +1284,9 @@ namespace Strategy
             result.is_dead_end = true;
             result.risk_score -= 1200; // 增加基础惩罚(800->1200)
             
-            // 获取蛇长度，评估是否能在死胡同中调头
-            int my_length = 0;
-            for (const auto &snake : state.snakes) if (snake.id == MYID) { my_length = snake.length; break; }
+                                    // 获取蛇长度，评估是否能在死胡同中调头
+        int my_length = 0;
+        for (const auto &snake : state.snakes) if (snake.id == MYID) { my_length = snake.length; break; }
             
             // 如果死胡同太窄不能调头，进一步增加风险
             if (my_length > max_width * 1.5) { // 调低阈值(2->1.5)，更容易触发
@@ -2552,7 +2555,7 @@ namespace Strategy
         openness_score = 30.0 * ((double)open_cells / max_possible_cells);
         return openness_score;
     }
-
+    
     // 检查点位的安全区收缩风险
     double checkPointSafeZoneRisk(const GameState &state, const Point &point, int step_idx) {
         int x = point.x, y = point.y;
@@ -3239,15 +3242,15 @@ bool enhancedFoodProcessByPriority(const GameState &state, int minValue, int max
     // 优先选择能消除更多距离的方向
     if (dx >= dy) {
         // 水平距离更大或相等，先处理水平
-        if (head.x > best_food.pos.x) preferred_dirs.push_back(Direction::LEFT);
-        else if (head.x < best_food.pos.x) preferred_dirs.push_back(Direction::RIGHT);
-      
+    if (head.x > best_food.pos.x) preferred_dirs.push_back(Direction::LEFT);
+    else if (head.x < best_food.pos.x) preferred_dirs.push_back(Direction::RIGHT);
+        
         if (head.y > best_food.pos.y) preferred_dirs.push_back(Direction::UP);
         else if (head.y < best_food.pos.y) preferred_dirs.push_back(Direction::DOWN);
     } else {
         // 垂直距离更大，先处理垂直
-        if (head.y > best_food.pos.y) preferred_dirs.push_back(Direction::UP);
-        else if (head.y < best_food.pos.y) preferred_dirs.push_back(Direction::DOWN);
+    if (head.y > best_food.pos.y) preferred_dirs.push_back(Direction::UP);
+    else if (head.y < best_food.pos.y) preferred_dirs.push_back(Direction::DOWN);
       
         if (head.x > best_food.pos.x) preferred_dirs.push_back(Direction::LEFT);
         else if (head.x < best_food.pos.x) preferred_dirs.push_back(Direction::RIGHT);
@@ -3310,7 +3313,7 @@ bool enhancedFoodProcessByPriority(const GameState &state, int minValue, int max
         unordered_set<Direction> check_illegals = illegalMove(state);
         if (check_illegals.count(dir) > 0) {
             // 如果不合法，退回到传统方法
-            dir = chooseBestDirection(state, preferred_dirs);
+    dir = chooseBestDirection(state, preferred_dirs);
         }
     } else {
         // 非紧邻食物，使用传统方法
@@ -3347,13 +3350,13 @@ int judge(const GameState &state)
 {
     // 更新目标锁定状态
     lock_on_target(state);
-  
+    
     // 获取自适应配置
     Strategy::RiskAdaptiveConfig config = Strategy::getAdaptiveConfig(state);
-  
+    
     const auto &self = state.get_self();
     const auto &head = self.get_head();
-  
+    
     // 获取当前游戏阶段信息
     int current_tick = MAX_TICKS - state.remaining_ticks;
     
