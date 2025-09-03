@@ -2899,15 +2899,21 @@ bool enhancedFoodProcessByPriority(const GameState &state, int minValue, int max
         // 计算食物的综合价值
         double adjusted_value = item.value;
         
-        // 根据路径安全性调整价值
+        // 根据路径安全性调整价值 - 使用改进的风险评估方法
         if (!path_safety.is_safe) {
-            // 风险路径降低价值
-            double risk_factor = 1.0 - min(1.0, -path_safety.safety_score / 2000.0);
+            // 1. 改进: 动态风险因子计算
+            double dynamic_risk_threshold = config.path_safety_threshold * 
+                                          (1 + 0.5 * (self.length > 10 ? 0.5 : 0)); // 蛇越长，风险容忍越高
+            
+            // 改进: 风险因子最多降低80%
+            double risk_factor = 1.0 - min(0.8, -path_safety.safety_score / 2000.0);
             adjusted_value *= risk_factor;
             
-            // 极度危险路径几乎放弃
-            if (path_safety.safety_score < config.path_safety_threshold) {
-                adjusted_value *= 0.2;
+            // 梯度惩罚而非二元决策
+            if (path_safety.safety_score < dynamic_risk_threshold) {
+                // 使用平滑过渡函数而非硬阈值
+                double severity = min(1.0, (dynamic_risk_threshold - path_safety.safety_score) / 500.0);
+                adjusted_value *= (0.8 - 0.6 * severity); // 从80%降至20%，而非直接20%
             }
         }
         
@@ -2929,12 +2935,44 @@ bool enhancedFoodProcessByPriority(const GameState &state, int minValue, int max
             }
         }
         
-        // 距离因素
-        double distance_factor = maxRange - dist + 1;
-        distance_factor /= maxRange;  // 归一化为0-1
+        // 2. 改进: 食物密集区识别
+        int nearby_food_count = 0;
+        for (const auto &other_item : state.items) {
+            if (&other_item != &item && // 不是同一个食物
+                abs(other_item.pos.y - item.pos.y) + abs(other_item.pos.x - item.pos.x) <= 4) {
+                nearby_food_count++;
+            }
+        }
+        
+        // 调整距离权重，较近食物更高权重
+        double distance_weight = self.length < 6 ? 0.8 : 0.6; // 短蛇更重视近距离食物
+        double distance_factor = pow(1.0 - (double)dist / maxRange, 1.5); // 使用指数函数增强近距离偏好
+        double cluster_bonus = nearby_food_count * 0.15; // 食物密集区加分
+        
+        // 3. 改进: 竞争分析
+        double competition_penalty = 0;
+        for (const auto &snake : state.snakes) {
+            if (snake.id != MYID && snake.id != -1) {
+                int enemy_dist = abs(snake.get_head().y - item.pos.y) + abs(snake.get_head().x - item.pos.x);
+                if (enemy_dist < dist * 1.2) { // 敌蛇更近或距离相近
+                    // 评估我方蛇在竞争中的优势
+                    bool has_length_advantage = self.length > snake.length + 2;
+                    bool has_position_advantage = Strategy::countSafeExits(state, item.pos) >= 2;
+                    
+                    // 根据优势调整惩罚
+                    if (!has_length_advantage && !has_position_advantage)
+                        competition_penalty += 0.4; // 重大劣势
+                    else if (has_length_advantage || has_position_advantage)
+                        competition_penalty += 0.2; // 部分劣势
+                }
+            }
+        }
+        
+        // 应用竞争惩罚
+        double competition_factor = max(0.3, 1.0 - competition_penalty);
         
         // 最终价值计算
-        double final_value = adjusted_value * (1.0 + distance_factor * 0.5);
+        double final_value = adjusted_value * (1.0 + distance_factor * distance_weight + cluster_bonus) * competition_factor;
         
         // 收集候选食物
         candidate_foods.push_back({item, final_value});
@@ -3034,6 +3072,9 @@ bool enhancedFoodProcessByPriority(const GameState &state, int minValue, int max
     
     return false;  // 没有找到满足条件的食物
 }
+
+// 前向声明统一食物处理函数
+bool processFoodWithDynamicPriority(const GameState &state, Direction& moveDirection);
 
 // 修改judge函数，整合所有安全性改进
 int judge(const GameState &state)
@@ -3182,32 +3223,16 @@ int judge(const GameState &state)
         }
     }
     
-    // 使用增强版食物处理 - 优先处理不同价值的食物
+    // 使用统一的动态优先级食物处理系统
     Direction food_dir = Direction::UP;  // 初始化为默认值
             
-    // 第一优先级：极近距离高价值尸体 (<=4格，价值>=5)
-    if (enhancedFoodProcessByPriority(state, 5, 4, food_dir)) {
+    // 4. 改进: 使用统一的食物处理函数，根据蛇长度和游戏阶段动态调整策略
+    if (processFoodWithDynamicPriority(state, food_dir)) {
         return Utils::dir2num(food_dir);
     }
     
-    // 不为高价值食物使用护盾，除非是必死无疑的情况，且不在最后5tick
-    // (已由shouldUseShield函数控制，此处不需要再开盾)
-    
-    // 特殊情况：极近距离的普通食物 (<=2格，任意价值>0)
-    if (enhancedFoodProcessByPriority(state, 1, 2, food_dir)) {
-        return Utils::dir2num(food_dir);
-    }
-    
-    // 不为普通食物使用护盾
-    // (已由shouldUseShield函数控制，此处不需要再开盾)
-    
-    // 第二优先级：近距离更高价值尸体 (<=6格，价值>=8)
-    if (enhancedFoodProcessByPriority(state, 8, 6, food_dir)) {
-        return Utils::dir2num(food_dir);
-    }
-    
-    // 第三优先级：扩展距离极高价值尸体 (<=10格，价值>=10)
-    if (enhancedFoodProcessByPriority(state, 10, 10, food_dir)) {
+    // 如果新的食物处理系统未返回结果，尝试使用普通近距离食物检测作为备用策略
+    if (enhancedFoodProcessByPriority(state, 0, 4, food_dir)) {
         return Utils::dir2num(food_dir);
     }
     
@@ -3283,8 +3308,8 @@ int judge(const GameState &state)
         }
     }
     
-    // 普通近距离食物检测
-    if (enhancedFoodProcessByPriority(state, 0, 4, food_dir)) {
+    // 最后尝试再次使用动态优先级系统，但降低阈值
+    if (processFoodWithDynamicPriority(state, food_dir)) {
         return Utils::dir2num(food_dir);
     }
     
@@ -3320,6 +3345,275 @@ int judge(const GameState &state)
     }
     
     return Utils::dir2num(best);
+}
+
+// 添加统一的食物处理函数，实现动态优先级和智能食物评估
+bool processFoodWithDynamicPriority(const GameState &state, Direction& moveDirection) {
+    const auto &self = state.get_self();
+    const auto &head = self.get_head();
+    
+    // 获取自适应配置
+    Strategy::RiskAdaptiveConfig config = Strategy::getAdaptiveConfig(state);
+    
+    // 定义优先级结构
+    struct FoodPriority {
+        int minValue;
+        int maxRange;
+        double priority_weight;
+    };
+    
+    // 动态调整优先级参数
+    int game_phase = MAX_TICKS - state.remaining_ticks;
+    bool late_game = (game_phase > 180);
+    
+    // 动态优先级配置
+    vector<FoodPriority> priorities;
+    
+    // 根据蛇长度和游戏阶段调整优先级
+    if (self.length < 8) { // 短蛇更激进寻找食物
+        if (late_game) {
+            // 后期短蛇优先考虑安全性
+            priorities = {
+                {5, 4, 1.4},   // 近距离高价值
+                {2, 2, 1.2},   // 极近距离中等价值
+                {1, 3, 0.9},   // 极近距离任意食物
+                {0, 5, 0.6}    // 近距离任意食物
+            };
+        } else {
+            // 前中期短蛇激进觅食
+            priorities = {
+                {5, 5, 1.3},   // 近距离高价值
+                {1, 3, 1.1},   // 极近距离任意食物
+                {3, 10, 0.9},  // 中等距离中等价值
+                {0, 6, 0.7}    // 近距离任意食物
+            };
+        }
+    } else { // 长蛇更谨慎
+        if (late_game) {
+            // 后期长蛇非常谨慎
+            priorities = {
+                {10, 3, 1.3},  // 极近距离极高价值
+                {6, 2, 1.1},   // 最近距离高价值
+                {3, 1, 0.8},   // 最近距离中等价值
+                {0, 4, 0.5}    // 近距离任意食物
+            };
+        } else {
+            // 前中期长蛇相对保守
+            priorities = {
+                {8, 4, 1.2},   // 近距离极高价值
+                {4, 3, 1.0},   // 极近距离高价值
+                {2, 2, 0.9},   // 最近距离中等价值
+                {0, 5, 0.6}    // 近距离任意食物
+            };
+        }
+    }
+    
+    // 统一处理所有食物
+    vector<pair<Item, double>> all_candidates;
+    
+    for (const auto &item : state.items) {
+        // 基础过滤
+        if (item.value == -2) continue; // 跳过陷阱
+        
+        // 计算距离
+        int dist = abs(head.y - item.pos.y) + abs(head.x - item.pos.x);
+        if (dist > 12) continue; // 最大搜索范围
+        
+        // 使用通用的目标可达性检测
+        if (!Utils::isTargetReachable(state, item.pos, item.lifetime)) {
+            continue; // 跳过不可达的食物
+        }
+        
+        // 评估路径安全性
+        auto path_safety = Strategy::evaluatePathSafety(state, head, item.pos, min(dist, 8));
+        
+        // 计算食物的基础价值
+        double base_value = item.value;
+        if (item.value == -1) base_value = 3; // 增长豆价值
+        
+        // 1. 改进: 动态风险因子计算
+        double dynamic_risk_threshold = config.path_safety_threshold * 
+                                       (1 + 0.5 * (self.length > 10 ? 0.5 : 0)); // 蛇越长，风险容忍越高
+        
+        double adjusted_value = base_value;
+        
+        // 根据路径安全性调整价值
+        if (!path_safety.is_safe) {
+            // 改进: 风险因子最多降低80%
+            double risk_factor = 1.0 - min(0.8, -path_safety.safety_score / 2000.0);
+            adjusted_value *= risk_factor;
+            
+            // 梯度惩罚而非二元决策
+            if (path_safety.safety_score < dynamic_risk_threshold) {
+                // 使用平滑过渡函数而非硬阈值
+                double severity = min(1.0, (dynamic_risk_threshold - path_safety.safety_score) / 500.0);
+                adjusted_value *= (0.8 - 0.6 * severity); // 从80%降至20%，而非直接20%
+            }
+        }
+        
+        // 安全区收缩检查
+        int current_tick = MAX_TICKS - state.remaining_ticks;
+        int ticks_to_shrink = state.next_shrink_tick - current_tick;
+        bool is_near_shrink = (ticks_to_shrink >= 0 && ticks_to_shrink <= 20);
+        
+        if (is_near_shrink) {
+            bool in_next_zone = item.pos.x >= state.next_safe_zone.x_min && 
+                               item.pos.x <= state.next_safe_zone.x_max &&
+                               item.pos.y >= state.next_safe_zone.y_min && 
+                               item.pos.y <= state.next_safe_zone.y_max;
+            
+            if (!in_next_zone) {
+                adjusted_value *= 0.3; // 不在下一安全区的食物价值大幅降低
+            } else {
+                adjusted_value *= 1.2; // 在下一安全区的食物价值提高
+            }
+        }
+        
+        // 2. 改进: 食物密集区识别
+        int nearby_food_count = 0;
+        for (const auto &other_item : state.items) {
+            if (&other_item != &item && // 不是同一个食物
+                abs(other_item.pos.y - item.pos.y) + abs(other_item.pos.x - item.pos.x) <= 4) {
+                nearby_food_count++;
+            }
+        }
+        
+        // 调整距离权重，较近食物更高权重
+        double distance_weight = self.length < 6 ? 0.8 : 0.6; // 短蛇更重视近距离食物
+        double distance_factor = pow(1.0 - (double)dist / 12.0, 1.5); // 使用指数函数增强近距离偏好
+        double cluster_bonus = nearby_food_count * 0.15; // 食物密集区加分
+        
+        // 3. 改进: 竞争分析
+        double competition_penalty = 0;
+        for (const auto &snake : state.snakes) {
+            if (snake.id != MYID && snake.id != -1) {
+                int enemy_dist = abs(snake.get_head().y - item.pos.y) + abs(snake.get_head().x - item.pos.x);
+                if (enemy_dist < dist * 1.2) { // 敌蛇更近或距离相近
+                    // 评估我方蛇在竞争中的优势
+                    bool has_length_advantage = self.length > snake.length + 2;
+                    bool has_position_advantage = Strategy::countSafeExits(state, item.pos) >= 2;
+                    
+                    // 根据优势调整惩罚
+                    if (!has_length_advantage && !has_position_advantage)
+                        competition_penalty += 0.4; // 重大劣势
+                    else if (has_length_advantage || has_position_advantage)
+                        competition_penalty += 0.2; // 部分劣势
+                }
+            }
+        }
+        
+        // 应用竞争惩罚
+        double competition_factor = max(0.3, 1.0 - competition_penalty);
+        
+        // 最终价值计算
+        double final_value = adjusted_value * (1.0 + distance_factor * distance_weight + cluster_bonus) * competition_factor;
+        
+        // 应用动态优先级
+        double priority_multiplier = 0.5; // 默认低优先级
+        for (const auto &p : priorities) {
+            if (item.value >= p.minValue && dist <= p.maxRange) {
+                priority_multiplier = p.priority_weight;
+                break;
+            }
+        }
+        
+        // 将计算好的食物加入统一列表
+        all_candidates.push_back({item, final_value * priority_multiplier});
+    }
+    
+    // 如果没有候选食物
+    if (all_candidates.empty()) {
+        return false;
+    }
+    
+    // 排序并选择最佳食物
+    sort(all_candidates.begin(), all_candidates.end(), 
+         [](const pair<Item, double> &a, const pair<Item, double> &b) {
+             return a.second > b.second;
+         });
+    
+    // 选择最佳食物
+    const Item &best_food = all_candidates[0].first;
+    
+    // 计算前往食物的首选方向
+    vector<Direction> preferred_dirs;
+    
+    // 水平方向
+    if (head.x > best_food.pos.x) preferred_dirs.push_back(Direction::LEFT);
+    else if (head.x < best_food.pos.x) preferred_dirs.push_back(Direction::RIGHT);
+    
+    // 垂直方向
+    if (head.y > best_food.pos.y) preferred_dirs.push_back(Direction::UP);
+    else if (head.y < best_food.pos.y) preferred_dirs.push_back(Direction::DOWN);
+    
+    // 护盾策略：仅在必死情况下使用
+    bool should_use_shield = false;
+    
+    // 检查是否处于绝境（几乎无路可走）
+    unordered_set<Direction> illegals = illegalMove(state);
+    if (illegals.size() >= 3) { // 至少有3个方向不可走
+        // 使用新的护盾评估函数，但仅考虑生存因素
+        should_use_shield = Strategy::shouldUseShield(
+            state, 
+            -2000, // 极高风险
+            0,     // 不考虑食物价值
+            false, // 不是安全区紧急情况
+            true   // 是生死攸关情形
+        );
+    }
+    
+    // 使用增强版方向选择逻辑
+    Direction dir;
+    
+    // 尝试使用A*寻路
+    auto path = Strategy::findPath(state, head, best_food.pos);
+    if (!path.empty()) {
+        // 获取下一步位置
+        const Point &next_pos = path[0];
+        
+        // 计算移动方向
+        if (next_pos.y < head.y) dir = Direction::UP;
+        else if (next_pos.y > head.y) dir = Direction::DOWN;
+        else if (next_pos.x < head.x) dir = Direction::LEFT;
+        else dir = Direction::RIGHT;
+        
+        // 检查移动是否合法
+        if (illegals.count(dir) == 0) {
+            moveDirection = dir;
+            
+            // 只在必死情况下使用护盾，且不在最后5tick
+            if (should_use_shield && self.shield_cd == 0 && self.score >= 20 && state.remaining_ticks > 5) {
+                // 检查是否确实无路可走
+                unordered_set<Direction> all_illegals = illegalMove(state);
+                if (all_illegals.size() >= 3) { // 只有1个方向可走或没有方向可走
+                    moveDirection = Direction::UP; // 特殊标记
+                    return false; // 特殊返回值，需要在外部处理护盾
+                }
+            }
+            
+            return true;
+        }
+    }
+    
+    // A*失败时退回到传统方法
+    dir = chooseBestDirection(state, preferred_dirs);
+    if (dir != Direction::UP || state.get_self().direction == 1) {
+        moveDirection = dir;
+        
+        // 只在必死情况下使用护盾，且不在最后5tick
+        if (should_use_shield && self.shield_cd == 0 && self.score >= 20 && state.remaining_ticks > 5) {
+            // 检查是否确实无路可走
+            unordered_set<Direction> all_illegals = illegalMove(state);
+            if (all_illegals.size() >= 3) { // 只有1个方向可走或没有方向可走
+                moveDirection = Direction::UP; // 特殊标记
+                return false; // 特殊返回值，需要在外部处理护盾
+            }
+        }
+        
+        return true;
+    }
+    
+    return false;  // 没有找到满足条件的食物
 }
 
 int main() {
