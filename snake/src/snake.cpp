@@ -103,6 +103,147 @@ namespace Strategy {
     double evaluateSafeZoneDensity(const GameState &state, int x, int y);
     double evaluateStrategicPosition(const GameState &state, int y, int x);
     TargetEvaluation evaluateChestKeyTarget(const GameState &state, const Point &target_pos, double base_value, bool is_chest);
+    
+    // 添加风险适应性配置结构体，用于游戏不同阶段的风险调整
+    struct RiskAdaptiveConfig {
+        double terrain_risk_weight;       // 地形风险权重
+        double snake_density_risk_weight; // 蛇密度风险权重
+        double food_value_weight;         // 食物价值权重
+        double path_safety_threshold;     // 路径安全阈值
+        double shield_activation_threshold; // 护盾激活阈值
+        
+        // 默认构造函数 - 均衡配置
+        RiskAdaptiveConfig() 
+            : terrain_risk_weight(1.0), 
+              snake_density_risk_weight(1.0),
+              food_value_weight(1.0),
+              path_safety_threshold(-1200),
+              shield_activation_threshold(-800) {}
+    };
+    
+    // 根据游戏阶段和蛇状态获取适应性配置
+    RiskAdaptiveConfig getAdaptiveConfig(const GameState &state) {
+        RiskAdaptiveConfig config;
+        const auto &self = state.get_self();
+        int current_tick = MAX_TICKS - state.remaining_ticks;
+        
+        // 游戏阶段划分
+        bool is_early_game = current_tick < 80;
+        bool is_mid_game = current_tick >= 80 && current_tick < 180;
+        bool is_late_game = current_tick >= 180;
+        
+        // 安全区状态
+        int ticks_to_shrink = state.next_shrink_tick - current_tick;
+        bool is_near_shrink = ticks_to_shrink >= 0 && ticks_to_shrink <= 20;
+        
+        // 蛇状态
+        bool is_high_score = self.score >= 100;
+        bool is_mid_score = self.score >= 50 && self.score < 100;
+        bool has_shield = self.shield_time > 0;
+        bool can_use_shield = self.shield_cd == 0 && self.score >= 20;
+        
+        // 游戏早期：更激进地追求食物，风险评估较宽松
+        if (is_early_game) {
+            config.terrain_risk_weight = 0.8;       // 降低地形风险权重
+            config.snake_density_risk_weight = 0.9; // 稍微降低蛇密度风险
+            config.food_value_weight = 1.3;         // 提高食物价值
+            config.path_safety_threshold = -1400;   // 接受更高风险的路径
+            config.shield_activation_threshold = -1000; // 更高的护盾激活阈值
+        }
+        // 游戏中期：逐渐重视安全性
+        else if (is_mid_game) {
+            if (is_high_score) { // 高分时更保守
+                config.terrain_risk_weight = 1.2;
+                config.snake_density_risk_weight = 1.2;
+                config.food_value_weight = 0.9;
+                config.path_safety_threshold = -1000;
+                config.shield_activation_threshold = -700;
+            } else {
+                // 默认配置适用
+            }
+            
+            // 安全区即将收缩时，调整策略
+            if (is_near_shrink) {
+                config.terrain_risk_weight *= 0.9;    // 降低地形风险权重
+                config.snake_density_risk_weight *= 1.3; // 更重视蛇密度风险
+                config.path_safety_threshold -= 200;  // 接受更高风险的路径
+            }
+        }
+        // 游戏后期：非常重视安全性
+        else if (is_late_game) {
+            config.terrain_risk_weight = 1.4;         // 提高地形风险权重
+            config.snake_density_risk_weight = 1.5;   // 更重视蛇密度
+            config.food_value_weight = 0.8;           // 降低食物价值权重
+            config.path_safety_threshold = -900;      // 更严格的安全路径标准
+            config.shield_activation_threshold = -600; // 更容易激活护盾
+            
+            // 安全区即将收缩时，特别调整
+            if (is_near_shrink) {
+                config.terrain_risk_weight *= 0.8;     // 降低地形风险权重
+                config.snake_density_risk_weight *= 1.5; // 大幅增加蛇密度风险权重
+                config.path_safety_threshold -= 300;   // 接受更高风险的路径
+                config.shield_activation_threshold -= 200; // 更容易激活护盾
+            }
+        }
+        
+        // 根据蛇状态进行额外调整
+        if (has_shield || can_use_shield) {
+            // 有护盾或可以使用护盾时更激进
+            config.terrain_risk_weight *= 0.9;
+            config.snake_density_risk_weight *= 0.9;
+            config.food_value_weight *= 1.1;
+            config.path_safety_threshold -= 200;
+        }
+        
+        if (is_high_score) {
+            // 高分时整体更保守
+            config.terrain_risk_weight *= 1.1;
+            config.snake_density_risk_weight *= 1.1;
+            config.food_value_weight *= 0.9;
+            config.path_safety_threshold += 100;
+        } else if (!is_mid_score && !is_early_game) {
+            // 低分且不在早期，更积极寻找食物
+            config.food_value_weight *= 1.2;
+            config.path_safety_threshold -= 100;
+        }
+        
+        return config;
+    }
+    
+    // 增强版评估函数，使用自适应配置
+    double evalWithAdaptiveConfig(const GameState &state, int y, int x, int fy, int fx) {
+        // 获取自适应配置
+        RiskAdaptiveConfig config = getAdaptiveConfig(state);
+        
+        // 基础评估
+        int test = cornerEval(y, x, fy, fx);
+        if (test != -10000) { // 是拐角位置
+            if (test == -5000) return -50000; // 危险拐角，强烈避免
+            if (test == -50) mp[y][x] = -9; // 标记陷阱拐角
+        }
+        
+        // 安全区评分 - 考虑边界和蛇密度
+        double safe_zone_score = safeZoneCenterScore(state, y, x);
+        
+        // 战略位置评估 - 中后期更关注终点安全区
+        double strategic_score = evaluateStrategicPosition(state, y, x);
+        
+        // BFS评估
+        double bfs_score = bfs(y, x, fy, fx, state);
+        
+        // 根据配置调整各部分权重
+        safe_zone_score *= config.snake_density_risk_weight;
+        strategic_score *= config.terrain_risk_weight;
+        
+        // 食物价值单独调整
+        double food_value = 0;
+        if (mp[y][x] > 0 || mp[y][x] == -1) { // 如果是食物或增长豆
+            food_value = mp[y][x] * 50 * config.food_value_weight; // 提取并调整食物价值
+        }
+        
+        // 整合评分
+        return bfs_score + safe_zone_score + strategic_score + food_value;
+    }
 }
 
 namespace Utils
@@ -2653,9 +2794,21 @@ Direction chooseBestDirection(const GameState &state, const vector<Direction>& p
     return (maxF == -4000) ? Direction::UP : best;
 }
 
-// 食物优先级处理辅助函数
+// 这个函数已被enhancedFoodProcessByPriority替代，保留为兼容性考虑
 bool processFoodByPriority(const GameState &state, int minValue, int maxRange, Direction& moveDirection) {
+    return enhancedFoodProcessByPriority(state, minValue, maxRange, moveDirection);
+}
+
+// 增强版食物优先级处理函数，考虑安全性因素
+bool enhancedFoodProcessByPriority(const GameState &state, int minValue, int maxRange, Direction& moveDirection) {
     const auto &head = state.get_self().get_head();
+    const auto &self = state.get_self();
+    
+    // 获取自适应配置
+    Strategy::RiskAdaptiveConfig config = Strategy::getAdaptiveConfig(state);
+    
+    // 收集候选食物
+    vector<pair<Item, double>> candidate_foods;
     
     for (const auto &item : state.items) {
         // 根据价值过滤
@@ -2664,7 +2817,7 @@ bool processFoodByPriority(const GameState &state, int minValue, int maxRange, D
         }
         
         // 计算距离
-            int dist = abs(head.y - item.pos.y) + abs(head.x - item.pos.x);
+        int dist = abs(head.y - item.pos.y) + abs(head.x - item.pos.x);
         if (dist > maxRange) {
             continue;  // 跳过超出范围的食物
         }
@@ -2674,40 +2827,167 @@ bool processFoodByPriority(const GameState &state, int minValue, int maxRange, D
             continue; // 跳过不可达的食物
         }
         
-        // 计算前往食物的首选方向
-        vector<Direction> preferred_dirs;
+        // 评估路径安全性
+        auto path_safety = Strategy::evaluatePathSafety(state, head, item.pos, min(dist, 8));
         
-        // 水平方向
-        if (head.x > item.pos.x) preferred_dirs.push_back(Direction::LEFT);
-        else if (head.x < item.pos.x) preferred_dirs.push_back(Direction::RIGHT);
+        // 计算食物的综合价值
+        double adjusted_value = item.value;
         
-        // 垂直方向
-        if (head.y > item.pos.y) preferred_dirs.push_back(Direction::UP);
-        else if (head.y < item.pos.y) preferred_dirs.push_back(Direction::DOWN);
+        // 根据路径安全性调整价值
+        if (!path_safety.is_safe) {
+            // 风险路径降低价值
+            double risk_factor = 1.0 - min(1.0, -path_safety.safety_score / 2000.0);
+            adjusted_value *= risk_factor;
+            
+            // 极度危险路径几乎放弃
+            if (path_safety.safety_score < config.path_safety_threshold) {
+                adjusted_value *= 0.2;
+            }
+        }
         
-        // 使用方向选择器
-        Direction dir = chooseBestDirection(state, preferred_dirs);
-        if (dir != Direction::UP || state.get_self().direction == 1) {
+        // 安全区收缩检查
+        int current_tick = MAX_TICKS - state.remaining_ticks;
+        int ticks_to_shrink = state.next_shrink_tick - current_tick;
+        bool is_near_shrink = (ticks_to_shrink >= 0 && ticks_to_shrink <= 20);
+        
+        if (is_near_shrink) {
+            bool in_next_zone = item.pos.x >= state.next_safe_zone.x_min && 
+                              item.pos.x <= state.next_safe_zone.x_max &&
+                              item.pos.y >= state.next_safe_zone.y_min && 
+                              item.pos.y <= state.next_safe_zone.y_max;
+            
+            if (!in_next_zone) {
+                adjusted_value *= 0.3; // 不在下一安全区的食物价值大幅降低
+            } else {
+                adjusted_value *= 1.2; // 在下一安全区的食物价值提高
+            }
+        }
+        
+        // 距离因素
+        double distance_factor = maxRange - dist + 1;
+        distance_factor /= maxRange;  // 归一化为0-1
+        
+        // 最终价值计算
+        double final_value = adjusted_value * (1.0 + distance_factor * 0.5);
+        
+        // 收集候选食物
+        candidate_foods.push_back({item, final_value});
+    }
+    
+    // 如果没有候选食物
+    if (candidate_foods.empty()) {
+        return false;
+    }
+    
+    // 按调整后的价值排序
+    sort(candidate_foods.begin(), candidate_foods.end(), 
+         [](const pair<Item, double> &a, const pair<Item, double> &b) {
+             return a.second > b.second;
+         });
+    
+    // 选择最佳食物
+    const Item &best_food = candidate_foods[0].first;
+    
+    // 计算前往食物的首选方向
+    vector<Direction> preferred_dirs;
+    
+    // 水平方向
+    if (head.x > best_food.pos.x) preferred_dirs.push_back(Direction::LEFT);
+    else if (head.x < best_food.pos.x) preferred_dirs.push_back(Direction::RIGHT);
+    
+    // 垂直方向
+    if (head.y > best_food.pos.y) preferred_dirs.push_back(Direction::UP);
+    else if (head.y < best_food.pos.y) preferred_dirs.push_back(Direction::DOWN);
+    
+    // 获取路径安全性评估
+    auto best_path_safety = Strategy::evaluatePathSafety(state, head, best_food.pos);
+    
+    // 根据路径安全性决定是否使用护盾
+    bool should_use_shield = false;
+    
+    // 如果路径不安全但食物价值高
+    if (!best_path_safety.is_safe && best_path_safety.safety_score > config.shield_activation_threshold) {
+        // 如果有护盾可用且食物价值足够高
+        if (self.shield_cd == 0 && self.score >= 20 && best_food.value >= 5) {
+            should_use_shield = true;
+        }
+        // 或者护盾正在生效
+        else if (self.shield_time > 0) {
+            should_use_shield = true;
+        }
+    }
+    
+    // 使用增强版方向选择逻辑
+    Direction dir;
+    
+    // 尝试使用A*寻路
+    auto path = Strategy::findPath(state, head, best_food.pos);
+    if (!path.empty()) {
+        // 获取下一步位置
+        const Point &next_pos = path[0];
+        
+        // 计算移动方向
+        if (next_pos.y < head.y) dir = Direction::UP;
+        else if (next_pos.y > head.y) dir = Direction::DOWN;
+        else if (next_pos.x < head.x) dir = Direction::LEFT;
+        else dir = Direction::RIGHT;
+        
+        // 检查移动是否合法
+        unordered_set<Direction> illegals = illegalMove(state);
+        if (illegals.count(dir) == 0) {
             moveDirection = dir;
+            
+            // 如果应该使用护盾，将其信息传递出去
+            if (should_use_shield) {
+                moveDirection = Direction::UP; // 特殊标记
+                return false; // 特殊返回值，需要在外部处理护盾
+            }
+            
             return true;
         }
+    }
+    
+    // A*失败时退回到传统方法
+    dir = chooseBestDirection(state, preferred_dirs);
+    if (dir != Direction::UP || state.get_self().direction == 1) {
+        moveDirection = dir;
+        
+        // 如果应该使用护盾，将其信息传递出去
+        if (should_use_shield) {
+            moveDirection = Direction::UP; // 特殊标记
+            return false; // 特殊返回值，需要在外部处理护盾
+        }
+        
+        return true;
     }
     
     return false;  // 没有找到满足条件的食物
 }
 
+// 修改judge函数，整合所有安全性改进
 int judge(const GameState &state)
 {
     // 更新目标锁定状态
     lock_on_target(state);
     
+    // 获取自适应配置
+    Strategy::RiskAdaptiveConfig config = Strategy::getAdaptiveConfig(state);
+    
+    const auto &self = state.get_self();
+    const auto &head = self.get_head();
+    
+    // 获取当前游戏阶段信息
+    int current_tick = MAX_TICKS - state.remaining_ticks;
+    int ticks_to_shrink = state.next_shrink_tick - current_tick;
+    bool is_near_shrink = (ticks_to_shrink >= 0 && ticks_to_shrink <= 20);
+    bool is_emergency_shrink = is_near_shrink && ticks_to_shrink <= 5;
+    
     // 处理宝箱和钥匙的目标锁定
     bool is_special_target = (state.get_self().has_key && is_chest_target && current_target.x != -1 && current_target.y != -1) ||
                             (!state.get_self().has_key && is_key_target && current_target.x != -1 && current_target.y != -1);
     
+    // 特殊目标逻辑
     if (is_special_target) {
-        const auto &head = state.get_self().get_head();
-        const auto &self = state.get_self();
         bool is_chest = state.get_self().has_key && is_chest_target;
         
         // 评估目标安全性，确保我们追求的是值得的目标
@@ -2731,7 +3011,7 @@ int judge(const GameState &state)
             bool should_use_shield = false;
             
             // 如果路径不安全但必须获取目标（如钥匙即将消失）
-            if (!path_safety.is_safe && path_safety.safety_score > -1500) {
+            if (!path_safety.is_safe && path_safety.safety_score > config.shield_activation_threshold) {
                 // 如果有护盾可用
                 if (self.shield_cd == 0 && self.score >= 20) {
                     should_use_shield = true;
@@ -2807,59 +3087,122 @@ int judge(const GameState &state)
         }
     }
     
-    // 即时反应 - 处理近距离高价值目标
-    const auto &head = state.get_self().get_head();
-
-    // 距离分层常量定义
-    const int VERY_CLOSE_RANGE = 4;  // 增加普通食物即时反应范围
-    const int CLOSE_RANGE = 6;       // 近距离
-    const int EXTENDED_RANGE = 10;   // 扩展检测范围
+    // 使用增强版食物处理 - 优先处理不同价值的食物
+    Direction food_dir;
+    bool should_use_shield = false;
     
-    // 使用辅助函数处理不同优先级的食物
-    Direction move_dir;
-            
     // 第一优先级：极近距离高价值尸体 (<=4格，价值>=5)
-    if (processFoodByPriority(state, 5, VERY_CLOSE_RANGE, move_dir)) return Utils::dir2num(move_dir);
+    if (enhancedFoodProcessByPriority(state, 5, 4, food_dir)) {
+        return Utils::dir2num(food_dir);
+    }
+    
+    // 检查是否需要使用护盾获取高价值食物
+    if (food_dir == Direction::UP && self.shield_cd == 0 && self.score >= 20) {
+        return SHIELD_COMMAND;
+    }
     
     // 特殊情况：极近距离的普通食物 (<=2格，任意价值>0)
-    for (const auto &item : state.items) {
-        // 只考虑普通食物
-        if (item.value > 0 && item.value < 5) {
-            int dist = abs(head.y - item.pos.y) + abs(head.x - item.pos.x);
-            if (dist <= 2) { // 非常近的食物
-                // 使用通用的目标可达性检测
-                if (!Utils::isTargetReachable(state, item.pos, item.lifetime)) continue; // 跳过不可达的食物
-                
-                // 如果可达且安全，计算首选方向
-                vector<Direction> preferred_dirs;
+    if (enhancedFoodProcessByPriority(state, 1, 2, food_dir)) {
+        return Utils::dir2num(food_dir);
+    }
+    
+    // 检查是否需要使用护盾获取食物
+    if (food_dir == Direction::UP && self.shield_cd == 0 && self.score >= 20) {
+        return SHIELD_COMMAND;
+    }
+    
+    // 第二优先级：近距离更高价值尸体 (<=6格，价值>=8)
+    if (enhancedFoodProcessByPriority(state, 8, 6, food_dir)) {
+        return Utils::dir2num(food_dir);
+    }
+    
+    // 第三优先级：扩展距离极高价值尸体 (<=10格，价值>=10)
+    if (enhancedFoodProcessByPriority(state, 10, 10, food_dir)) {
+        return Utils::dir2num(food_dir);
+    }
+    
+    // 安全区收缩策略
+    if (is_near_shrink) {
+        // 如果即将收缩且蛇不在下一个安全区
+        if (!Utils::willDisappearInShrink(state, head.x, head.y)) {
+            // 判断蛇是否在下一个安全区内
+            bool snake_in_next_zone = (head.x >= state.next_safe_zone.x_min && 
+                                     head.x <= state.next_safe_zone.x_max &&
+                                     head.y >= state.next_safe_zone.y_min && 
+                                     head.y <= state.next_safe_zone.y_max);
+            
+            if (!snake_in_next_zone) {
+                // 计算到下一个安全区的最短距离方向
+                vector<Direction> safe_zone_dirs;
                 
                 // 水平方向
-                if (head.x > item.pos.x) preferred_dirs.push_back(Direction::LEFT);
-                else if (head.x < item.pos.x) preferred_dirs.push_back(Direction::RIGHT);
+                if (head.x < state.next_safe_zone.x_min) {
+                    safe_zone_dirs.push_back(Direction::RIGHT);
+                } else if (head.x > state.next_safe_zone.x_max) {
+                    safe_zone_dirs.push_back(Direction::LEFT);
+                }
                 
                 // 垂直方向
-                if (head.y > item.pos.y) preferred_dirs.push_back(Direction::UP);
-                else if (head.y < item.pos.y) preferred_dirs.push_back(Direction::DOWN);
+                if (head.y < state.next_safe_zone.y_min) {
+                    safe_zone_dirs.push_back(Direction::DOWN);
+                } else if (head.y > state.next_safe_zone.y_max) {
+                    safe_zone_dirs.push_back(Direction::UP);
+                }
                 
-                Direction dir = chooseBestDirection(state, preferred_dirs);
-                if (dir != Direction::UP || state.get_self().direction == 1) return Utils::dir2num(dir);
+                // 如果有明确方向指向安全区
+                if (!safe_zone_dirs.empty()) {
+                    Direction safe_dir = chooseBestDirection(state, safe_zone_dirs);
+                    
+                    // 如果距离收缩时间很近，考虑使用护盾
+                    if (is_emergency_shrink && self.shield_cd == 0 && self.score >= 20) {
+                        return SHIELD_COMMAND;
+                    }
+                    
+                    if (safe_dir != Direction::UP || state.get_self().direction == 1) {
+                        return Utils::dir2num(safe_dir);
+                    }
+                }
             }
         }
     }
     
-    // 第二优先级：近距离更高价值尸体 (<=6格，价值>=8)
-    if (processFoodByPriority(state, 8, CLOSE_RANGE, move_dir)) return Utils::dir2num(move_dir);
-    
-    // 第三优先级：扩展距离极高价值尸体 (<=10格，价值>=10)
-    if (processFoodByPriority(state, 10, EXTENDED_RANGE, move_dir)) return Utils::dir2num(move_dir);
-    
     // 普通近距离食物检测
-    if (processFoodByPriority(state, 0, VERY_CLOSE_RANGE, move_dir)) return Utils::dir2num(move_dir);
+    if (enhancedFoodProcessByPriority(state, 0, 4, food_dir)) {
+        return Utils::dir2num(food_dir);
+    }
     
-    // 默认行为 - 评估所有方向并选择最佳
-    Direction best_dir = chooseBestDirection(state);
-    return (best_dir == Direction::UP && state.get_self().direction != 1) ? 
-           SHIELD_COMMAND : Utils::dir2num(best_dir);
+    // 默认行为 - 使用自适应配置评估所有方向并选择最佳
+    unordered_set<Direction> illegals = illegalMove(state);
+    vector<Direction> legalMoves;
+    
+    for (auto dir : validDirections) {
+        if (illegals.count(dir) == 0) legalMoves.push_back(dir);
+    }
+    
+    if (legalMoves.empty()) {
+        // 如果没有合法移动但可以开护盾
+        if (self.shield_cd == 0 && self.score >= 20) {
+            return SHIELD_COMMAND;
+        }
+        return Utils::dir2num(Direction::UP); // 默认上方向
+    }
+    
+    double maxF = -4000;
+    Direction best = legalMoves[0];
+    
+    for (auto dir : legalMoves) {
+        const auto [y, x] = Utils::nextPos({head.y, head.x}, dir);
+        
+        // 使用自适应配置的评估函数
+        double eval = Strategy::evalWithAdaptiveConfig(state, y, x, head.y, head.x);
+        
+        if (eval > maxF) {
+            maxF = eval;
+            best = dir;
+        }
+    }
+    
+    return Utils::dir2num(best);
 }
 
 int main() {
