@@ -1013,38 +1013,99 @@ unordered_set<Direction> illegalMove(const GameState &state, int look_ahead = 3)
     // 如果基本检查已将所有方向标记为非法，启用紧急模式
     if (illegals.size() == 4) return emergencyIllegalCheck(state);
     
-    // 前瞻性评估剩余合法方向
+    // 前瞻性评估剩余合法方向 - 增强预判能力
     const Point &head = self.get_head();
     for (auto dir : validDirections) {
         if (illegals.count(dir) > 0) continue; // 跳过已标记为非法的方向
         
         const auto [ny, nx] = Utils::nextPos({head.y, head.x}, dir);
         
-        // 模拟前进look_ahead步，评估是否会陷入险境
-        // 直接使用向前声明的函数
-        double future_risk = -500; // 默认风险值
+        // 调用地形分析函数进行深度评估
+        auto terrain_analysis = Strategy::analyzeTerrainRisk(state, ny, nx);
+        double terrain_score = terrain_analysis.risk_score;
         
-        // 基本风险评估 - 通过计算安全出口的数量
+        // 如果地形分析显示该方向危险性很高，直接标记为非法
+        if (terrain_score <= -1500 || // 地形分析表明高风险
+            terrain_analysis.is_dead_end || // 是死胡同
+            (terrain_analysis.is_bottleneck && terrain_analysis.exit_count < 8)) { // 是狭窄瓶颈
+            
+            illegals.insert(dir);
+            continue;
+        }
+        
+        // 执行更深入的风险评估 - 通过计算安全出口和特征
         int safe_exits = 0;
+        int dangerous_exits = 0;
+        bool has_wall_adjacent = false;
+        
+        // 检查目标点周围的墙壁
+        int wall_count = 0;
+        for (auto check_dir : validDirections) {
+            const auto [check_y, check_x] = Utils::nextPos({ny, nx}, check_dir);
+            if (!Utils::boundCheck(check_y, check_x) || map_item[check_y][check_x] == -4) {
+                wall_count++;
+            }
+        }
+        
+        // 目标点周围有2个或以上的墙，说明可能是拐角或死角
+        if (wall_count >= 2) {
+            illegals.insert(dir);
+            continue;
+        }
+        
+        // 检查下一步位置的出口
         for (auto exit_dir : validDirections) {
             const auto [exit_y, exit_x] = Utils::nextPos({ny, nx}, exit_dir);
+            
             // 检查是否是有效出口(在界内，不是墙，不是蛇身，在安全区)
             if (Utils::boundCheck(exit_y, exit_x) && 
                 map_item[exit_y][exit_x] != -4 && map_snake[exit_y][exit_x] != -5 &&
                 exit_x >= state.current_safe_zone.x_min && exit_x <= state.current_safe_zone.x_max && 
                 exit_y >= state.current_safe_zone.y_min && exit_y <= state.current_safe_zone.y_max) {
+                
                 safe_exits++;
+                
+                // 递归检查第二层出口 - 检查这个出口的出口
+                int second_level_exits = 0;
+                for (auto second_dir : validDirections) {
+                    const auto [second_y, second_x] = Utils::nextPos({exit_y, exit_x}, second_dir);
+                    if (Utils::boundCheck(second_y, second_x) && 
+                        map_item[second_y][second_x] != -4 && map_snake[second_y][second_x] != -5) {
+                        second_level_exits++;
+                    }
+                }
+                
+                // 如果这个出口自己的出口数量太少，标记为危险出口
+                if (second_level_exits <= 1) {
+                    dangerous_exits++;
+                }
             }
         }
         
-        // 出口越少，风险越高
-        if (safe_exits == 0) future_risk = -2000;  // 死路
-        else if (safe_exits == 1) future_risk = -1200;  // 只有一个出口，高风险
-        else if (safe_exits == 2) future_risk = -800;   // 两个出口，中等风险
-        else future_risk = -200;  // 多个出口，相对安全
+        // 出口评估逻辑改进 - 考虑递归检查的结果
+        double future_risk = 0;
         
-        // 如果前瞻风险过高，标记为非法
-        if (future_risk < -1000) illegals.insert(dir);
+        // 没有安全出口，死路
+        if (safe_exits == 0) {
+            illegals.insert(dir);
+            continue;
+        }
+        // 只有一个出口，高风险
+        else if (safe_exits == 1) {
+            illegals.insert(dir); // 直接禁止单出口方向
+            continue;
+        }
+        // 出口虽多，但大部分是危险出口
+        else if (safe_exits <= 3 && dangerous_exits >= safe_exits - 1) {
+            illegals.insert(dir); // 禁止出口大多是危险出口的方向
+            continue;
+        }
+        
+        // 如果这个方向看起来可能导致未来的困境，尝试禁止它
+        if (safe_exits <= 2 && terrain_score < -800) {
+            illegals.insert(dir);
+        }
+    }
     }
     
     // 如果前瞻性检查将所有方向标记为非法，恢复到基本合法方向
@@ -1165,39 +1226,132 @@ namespace Strategy
         // 如果有两个及以上方向是墙，检查是否形成角落
         if (wall_directions >= 2) {
             is_corner = true;
-            result.risk_score -= 600; // 角落惩罚
+            result.risk_score -= 900; // 增加角落惩罚力度(600->900)
             
-            // 如果是死角(三面墙)，给予更严厉的惩罚
+            // 如果是死角(三面墙)，给予极其严厉的惩罚
             if (wall_directions >= 3) {
-                result.risk_score -= 1200;
+                result.risk_score -= 2000; // 极度避开死角(1200->2000)
             }
         }
         
-        // 检测死胡同：深度大于宽度且空间有限
-        if (max_depth > 3 && max_width < 3 && visited.size() < 12) {
-            result.is_dead_end = true;
-            result.risk_score -= 800;
+        // 增加特殊危险地形检测：相邻墙角形成的陷阱
+        bool is_dangerous_corner = false;
+        int adjacent_wall_count = 0;
+        bool has_diagonal_walls = false;
+        
+        // 检查对角线墙壁 - 这种地形特别危险
+        if (wall_directions == 2) {
+            bool walls[4] = {false, false, false, false}; // 上、右、下、左
+            int wall_idx = 0;
             
-                                    // 获取蛇长度，评估是否能在死胡同中调头
-        int my_length = 0;
-        for (const auto &snake : state.snakes) if (snake.id == MYID) { my_length = snake.length; break; }
+            for (auto dir : validDirections) {
+                const auto [ny, nx] = Utils::nextPos({y, x}, dir);
+                if (!Utils::boundCheck(ny, nx) || map_item[ny][nx] == -4) {
+                    walls[wall_idx] = true;
+                }
+                wall_idx++;
+            }
+            
+            // 检查对角线墙壁 - 这种最容易导致死亡
+            if ((walls[0] && walls[1]) || (walls[1] && walls[2]) || 
+                (walls[2] && walls[3]) || (walls[3] && walls[0])) {
+                is_dangerous_corner = true;
+                result.risk_score -= 1500; // 对角墙壁额外惩罚
+            }
+        }
+        
+        // 检查1格宽的走廊 - 这种很容易被卡死
+        int corridor_count = 0;
+        for (int i = 0; i < 4; i++) {
+            const auto [ny1, nx1] = Utils::nextPos({y, x}, validDirections[i]);
+            const auto [ny2, nx2] = Utils::nextPos({y, x}, validDirections[(i+2)%4]); // 对面方向
+            
+            if ((!Utils::boundCheck(ny1, nx1) || map_item[ny1][nx1] == -4) &&
+                (!Utils::boundCheck(ny2, nx2) || map_item[ny2][nx2] == -4)) {
+                // 检测到1格宽通道
+                corridor_count++;
+                result.risk_score -= 700; // 窄通道额外惩罚
+                break;
+            }
+        }
+        
+        // 检测死胡同：降低阈值，增加敏感度
+        if ((max_depth > 2 && max_width < 4 && visited.size() < 15) || // 更宽松条件，更早识别死胡同
+            (bottleneck_width <= 1 && visited.size() < 20)) { // 任何单格通道都视为潜在死胡同
+            result.is_dead_end = true;
+            result.risk_score -= 1200; // 增加基础惩罚(800->1200)
+            
+            // 获取蛇长度，评估是否能在死胡同中调头
+            int my_length = 0;
+            for (const auto &snake : state.snakes) if (snake.id == MYID) { my_length = snake.length; break; }
             
             // 如果死胡同太窄不能调头，进一步增加风险
-            if (my_length > max_width * 2) {
-                result.risk_score -= 1000;
+            if (my_length > max_width * 1.5) { // 调低阈值(2->1.5)，更容易触发
+                result.risk_score -= 1500; // 增加惩罚(1000->1500)
                 
                 // 极短死胡同且蛇较长时，给予极高惩罚
-                if (max_depth <= 2 && my_length >= 8) result.risk_score = -1800; // 几乎必死
+                if (max_depth <= 3 && my_length >= 5) // 降低阈值，更早触发极度避免
+                    result.risk_score = -2500; // 几乎必死，大幅增加惩罚(1800->2500)
             }
+            
+            // 检查出口附近是否有敌方蛇 - 如果有，那么风险更大
+            bool enemies_near_exit = false;
+            for (const auto &snake : state.snakes) {
+                if (snake.id != MYID && snake.id != -1) {
+                    for (const auto &point_str : visited) {
+                        auto point = Utils::str2idx(point_str);
+                        int dist = abs(snake.get_head().y - point.first) + abs(snake.get_head().x - point.second);
+                        if (dist <= 3) {
+                            enemies_near_exit = true;
+                            break;
+                        }
+                    }
+                    if (enemies_near_exit) break;
+                }
+            }
+            
+            if (enemies_near_exit)
+                result.risk_score -= 800; // 出口附近有敌人，额外惩罚
         }
         
-        // 检测瓶颈：有收缩点且收缩点宽度小
-        if (bottleneck_width <= 2 && max_width > 3) {
+        // 检测瓶颈：有收缩点且收缩点宽度小 - 增强敏感度和惩罚力度
+        if (bottleneck_width <= 3 && max_width > 3) { // 增加检测宽度(2->3)
             result.is_bottleneck = true;
-            result.risk_score -= 300 * (4 - bottleneck_width);
+            result.risk_score -= 450 * (4 - bottleneck_width); // 增强基础惩罚(300->450)
             
             // 检查瓶颈附近是否有其他蛇
-            if (checkEnemyNearArea(state, visited, 3)) result.risk_score -= 500;
+            if (checkEnemyNearArea(state, visited, 4)) { // 增加检测范围(3->4)
+                result.risk_score -= 800; // 增加敌方蛇惩罚(500->800)
+            }
+            
+            // 检查瓶颈是否靠近地图边缘 - 这种情况特别危险
+            bool near_edge = false;
+            for (const auto &point_str : visited) {
+                auto point = Utils::str2idx(point_str);
+                if (point.first <= 1 || point.first >= MAXM-2 || point.second <= 1 || point.second >= MAXN-2) {
+                    near_edge = true;
+                    break;
+                }
+            }
+            
+            if (near_edge) {
+                result.risk_score -= 400; // 靠近地图边缘的瓶颈额外惩罚
+            }
+            
+            // 瓶颈特别窄的情况需要额外惩罚
+            if (bottleneck_width == 1) {
+                // 单格通道是极度危险的
+                result.risk_score -= 1200; // 单格通道额外重惩罚
+                
+                // 获取蛇长度评估风险
+                int my_length = 0;
+                for (const auto &snake : state.snakes) if (snake.id == MYID) { my_length = snake.length; break; }
+                
+                // 蛇长度大于6且通过单格瓶颈，风险极大
+                if (my_length > 6) {
+                    result.risk_score -= 1000; // 长蛇通过单格瓶颈额外惩罚
+                }
+            }
         }
         
         return result;
