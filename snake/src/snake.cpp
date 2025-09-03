@@ -24,6 +24,9 @@ enum class Direction { LEFT, UP, RIGHT, DOWN };
 
 const vector<Direction> validDirections{Direction::UP, Direction::DOWN, Direction::LEFT, Direction::RIGHT};
 
+// 游戏地图状态: mp用于物品, mp2用于蛇的位置
+int mp[MAXM][MAXN], mp2[MAXM][MAXN];
+
 // 将类型定义放到最前面
 struct Point { 
     int y, x;
@@ -71,6 +74,11 @@ struct GameState {
 
 // 前向声明Strategy命名空间中的结构体和函数
 namespace Strategy {
+    // 前向声明所有需要的函数
+    int cornerEval(int y, int x, int fy, int fx);
+    double safeZoneCenterScore(const GameState &state, int y, int x);
+    double bfs(int sy, int sx, int fy, int fx, const GameState &state);
+
     struct TargetEvaluation { Point position; double value; int distance; bool is_safe; };
     TargetEvaluation evaluateTarget(const GameState &state, const Point &target_pos, double base_value, bool is_chest);
     struct DeadEndAnalysis; struct TerrainAnalysis;
@@ -103,6 +111,9 @@ namespace Strategy {
     double evaluateSafeZoneDensity(const GameState &state, int x, int y);
     double evaluateStrategicPosition(const GameState &state, int y, int x);
     TargetEvaluation evaluateChestKeyTarget(const GameState &state, const Point &target_pos, double base_value, bool is_chest);
+    
+    // 前向声明evalWithAdaptiveConfig函数
+    double evalWithAdaptiveConfig(const GameState &state, int y, int x, int fy, int fx);
     
     // 添加风险适应性配置结构体，用于游戏不同阶段的风险调整
     struct RiskAdaptiveConfig {
@@ -334,8 +345,8 @@ namespace Utils
     }
 }
 
-// 游戏地图状态: mp用于物品, mp2用于蛇的位置
-int mp[MAXM][MAXN], mp2[MAXM][MAXN];
+// 这行已移动到文件顶部，此处删除
+// 游戏地图状态现在在文件顶部声明
 
 // 简化的目标锁定机制
 static Point current_target = {-1, -1};
@@ -415,7 +426,7 @@ void lock_on_target(const GameState &state) {
                 // 优先选择安全的宝箱
                 if (eval.is_safe) {
                     if (best_chest.position.x == -1 || !best_chest.is_safe || eval.value > best_chest.value) {
-                        best_chest = eval;
+                    best_chest = eval;
                     }
                 } 
                 // 安全区收缩前的紧急决策
@@ -437,7 +448,7 @@ void lock_on_target(const GameState &state) {
                     
                     // 收缩前紧急获取宝箱
                     if (eval.value > best_chest.value || (chest_in_next_zone && !best_chest.is_safe)) {
-                        best_chest = eval;
+                    best_chest = eval;
                     }
                 }
                 // 次优先：不安全但高价值的宝箱
@@ -604,7 +615,7 @@ void lock_on_target(const GameState &state) {
                     // 优先考虑安全的钥匙
                     if (eval.is_safe) {
                         if (best_key.position.x == -1 || !best_key.is_safe || eval.value > best_key.value) {
-                            best_key = eval;
+                        best_key = eval;
                         }
                     } 
                     // 次优先：安全区收缩时更紧急地寻找钥匙
@@ -615,7 +626,7 @@ void lock_on_target(const GameState &state) {
                         // 如果风险可控，考虑这个钥匙
                         if (path_safety.safety_score > -1500 || 
                             (eval.distance < best_key.distance * 0.7 && eval.value > best_key.value * 0.8)) {
-                            best_key = eval;
+                        best_key = eval;
                         }
                     }
                     // 次优先：不安全但更接近且价值高的钥匙
@@ -1837,7 +1848,7 @@ namespace Strategy
         
         // 根据路径安全性调整目标价值
         if (!path_safety.is_safe) {
-            result.is_safe = false;
+                result.is_safe = false;
             
             // 根据危险程度降低价值
             double danger_ratio = 1.0 - min(1.0, -path_safety.safety_score / 2000.0);
@@ -1854,7 +1865,7 @@ namespace Strategy
             result.is_safe = false;
             result.value *= 0.5;
         }
-        
+      
         // 竞争因素
         int closest_competitor_dist = INT_MAX;
       
@@ -1886,7 +1897,7 @@ namespace Strategy
         
         // 安全性检查1: 安全区收缩
         if (Utils::willDisappearInShrink(state, target_pos.x, target_pos.y)) {
-            result.is_safe = false;
+                            result.is_safe = false;
             result.value *= 0.1; // 宝箱/钥匙如果在收缩区，几乎不考虑
             return result; // 目标将消失，直接返回
         }
@@ -1934,7 +1945,7 @@ namespace Strategy
             if (dist_to_border == 0) {
                 result.is_safe = false;
                 result.value *= 0.3;
-            } else {
+                    } else {
                 result.value *= (0.7 + 0.1 * dist_to_border); // 0.8 或 0.9
             }
         }
@@ -2040,10 +2051,10 @@ namespace Strategy
                 result.value *= 1.2;
             }
         }
-        
+      
         return result;
     }
-    
+
     // 计算位置的安全出口数量
     int countSafeExits(const GameState &state, const Point &pos) {
         int safe_exits = 0;
@@ -2340,9 +2351,6 @@ namespace Strategy
         int ticks_to_shrink = state.next_shrink_tick - current_tick;
         int estimated_arrival_tick = current_tick + step_idx;
         bool will_be_shrunk = estimated_arrival_tick >= state.next_shrink_tick;
-        
-        // 根据是否收缩选择安全区
-        SafeZoneBounds zone = will_be_shrunk ? state.next_safe_zone : state.current_safe_zone;
         
         // 计算安全区面积和收缩比例
         double safe_zone_area_factor = 1.0;
@@ -2644,22 +2652,21 @@ namespace Strategy
             return score;
         }
         
-        // 获取当前和将来的安全区
-        SafeZoneBounds current_zone = state.current_safe_zone;
-        SafeZoneBounds next_zone = state.next_safe_zone;
-        SafeZoneBounds final_zone = state.final_safe_zone;
-        
-        // 计算当前点到最终安全区中心的距离
-        int final_center_x = (final_zone.x_min + final_zone.x_max) / 2;
-        int final_center_y = (final_zone.y_min + final_zone.y_max) / 2;
-        int dist_to_final_center = abs(y - final_center_y) + abs(x - final_center_x);
-        
-        // 计算各个安全区的面积
-        int current_area = (current_zone.x_max - current_zone.x_min + 1) * 
+                 // 获取当前和将来的安全区
+         SafeZoneBounds current_zone = state.current_safe_zone;
+         SafeZoneBounds next_zone = state.next_safe_zone;
+         SafeZoneBounds final_zone = state.final_safe_zone;
+         
+         // 计算当前点到最终安全区中心的距离
+         int final_center_x = (final_zone.x_min + final_zone.x_max) / 2;
+         int final_center_y = (final_zone.y_min + final_zone.y_max) / 2;
+         int dist_to_final_center = abs(y - final_center_y) + abs(x - final_center_x);
+         
+         // 计算各个安全区的面积
+         int current_area = (current_zone.x_max - current_zone.x_min + 1) * 
                           (current_zone.y_max - current_zone.y_min + 1);
-        int next_area = (next_zone.x_max - next_zone.x_min + 1) * 
-                       (next_zone.y_max - next_zone.y_min + 1);
-        int final_area = (final_zone.x_max - final_zone.x_min + 1) * 
+         // 注意：next_area在下面的代码中未使用，先计算final_area
+         int final_area = (final_zone.x_max - final_zone.x_min + 1) * 
                         (final_zone.y_max - final_zone.y_min + 1);
         
         // 中期策略：开始关注下一个安全区
@@ -2793,6 +2800,9 @@ Direction chooseBestDirection(const GameState &state, const vector<Direction>& p
   
     return (maxF == -4000) ? Direction::UP : best;
 }
+
+// 添加增强版食物处理函数的前向声明
+bool enhancedFoodProcessByPriority(const GameState &state, int minValue, int maxRange, Direction& moveDirection);
 
 // 这个函数已被enhancedFoodProcessByPriority替代，保留为兼容性考虑
 bool processFoodByPriority(const GameState &state, int minValue, int maxRange, Direction& moveDirection) {
@@ -2983,12 +2993,12 @@ int judge(const GameState &state)
     bool is_emergency_shrink = is_near_shrink && ticks_to_shrink <= 5;
     
     // 处理宝箱和钥匙的目标锁定
-    bool is_special_target = (state.get_self().has_key && is_chest_target && current_target.x != -1 && current_target.y != -1) ||
-                            (!state.get_self().has_key && is_key_target && current_target.x != -1 && current_target.y != -1);
+    bool is_special_target = (self.has_key && is_chest_target && current_target.x != -1 && current_target.y != -1) ||
+                            (!self.has_key && is_key_target && current_target.x != -1 && current_target.y != -1);
     
     // 特殊目标逻辑
     if (is_special_target) {
-        bool is_chest = state.get_self().has_key && is_chest_target;
+        bool is_chest = self.has_key && is_chest_target;
         
         // 评估目标安全性，确保我们追求的是值得的目标
         Strategy::TargetEvaluation target_eval = Strategy::evaluateChestKeyTarget(
@@ -3071,25 +3081,24 @@ int judge(const GameState &state)
                 // 确定方向优先级 - 同时考虑水平和垂直方向
                 if (head.x > current_target.x) preferred_dirs.push_back(Direction::LEFT);
                 else if (head.x < current_target.x) preferred_dirs.push_back(Direction::RIGHT);
-                if (head.y > current_target.y) preferred_dirs.push_back(Direction::UP);
-                else if (head.y < current_target.y) preferred_dirs.push_back(Direction::DOWN);
-                
+        if (head.y > current_target.y) preferred_dirs.push_back(Direction::UP);
+        else if (head.y < current_target.y) preferred_dirs.push_back(Direction::DOWN);
+        
                 // 使用增强的方向选择
-                Direction best_dir = chooseBestDirection(state, preferred_dirs);
-                if (best_dir != Direction::UP || state.get_self().direction == 1) {
+        Direction best_dir = chooseBestDirection(state, preferred_dirs);
+        if (best_dir != Direction::UP || state.get_self().direction == 1) {
                     // 如果需要使用护盾并且条件允许
                     if (should_use_shield && self.shield_cd == 0 && self.score >= 20) {
                         return SHIELD_COMMAND;
                     }
-                    return Utils::dir2num(best_dir);
+            return Utils::dir2num(best_dir);
                 }
             }
         }
     }
     
     // 使用增强版食物处理 - 优先处理不同价值的食物
-    Direction food_dir;
-    bool should_use_shield = false;
+    Direction food_dir = Direction::UP;  // 初始化为默认值
     
     // 第一优先级：极近距离高价值尸体 (<=4格，价值>=5)
     if (enhancedFoodProcessByPriority(state, 5, 4, food_dir)) {
