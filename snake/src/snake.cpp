@@ -24,8 +24,8 @@ enum class Direction { LEFT, UP, RIGHT, DOWN };
 
 const vector<Direction> validDirections{Direction::UP, Direction::DOWN, Direction::LEFT, Direction::RIGHT};
 
-// 游戏地图状态: mp用于物品, mp2用于蛇的位置
-int mp[MAXM][MAXN], mp2[MAXM][MAXN];
+// 游戏地图状态: map_item用于物品, map_snake用于蛇的位置
+int map_item[MAXM][MAXN], map_snake[MAXM][MAXN];
 
 // 将类型定义放到最前面
 struct Point { 
@@ -230,7 +230,7 @@ namespace Strategy {
         int test = cornerEval(y, x, fy, fx);
         if (test != -10000) { // 是拐角位置
             if (test == -5000) return -50000; // 危险拐角，强烈避免
-            if (test == -50) mp[y][x] = -9; // 标记陷阱拐角
+            if (test == -50) map_item[y][x] = -9; // 标记陷阱拐角
         }
         
         // 安全区评分 - 考虑边界和蛇密度
@@ -248,8 +248,8 @@ namespace Strategy {
         
         // 食物价值单独调整
         double food_value = 0;
-        if (mp[y][x] > 0 || mp[y][x] == -1) { // 如果是食物或增长豆
-            food_value = mp[y][x] * 50 * config.food_value_weight; // 提取并调整食物价值
+        if (map_item[y][x] > 0 || map_item[y][x] == -1) { // 如果是食物或增长豆
+            food_value = map_item[y][x] * 50 * config.food_value_weight; // 提取并调整食物价值
         }
         
         // 整合评分
@@ -758,7 +758,7 @@ void read_game_state(GameState &s) {
   cin >> s.remaining_ticks;
 
   // 初始化地图状态
-  memset(mp, 0, sizeof(mp)); memset(mp2, 0, sizeof(mp2));
+  memset(map_item, 0, sizeof(map_item)); memset(map_snake, 0, sizeof(map_snake));
 
   // 读取物品信息
   int item_count;
@@ -768,9 +768,9 @@ void read_game_state(GameState &s) {
     cin >> s.items[i].pos.y >> s.items[i].pos.x >>
         s.items[i].value >> s.items[i].lifetime;
     
-    // 更新mp地图
+    // 更新map_item地图
     if (Utils::boundCheck(s.items[i].pos.y, s.items[i].pos.x)) {
-      mp[s.items[i].pos.y][s.items[i].pos.x] = s.items[i].value;
+      map_item[s.items[i].pos.y][s.items[i].pos.x] = s.items[i].value;
     }
   }
 
@@ -788,9 +788,9 @@ void read_game_state(GameState &s) {
     for (int j = 0; j < sn.length; ++j) {
       cin >> sn.body[j].y >> sn.body[j].x;
       
-      // 更新mp2地图 - 蛇的身体部分
+      // 更新map_snake地图 - 蛇的身体部分
       if (Utils::boundCheck(sn.body[j].y, sn.body[j].x)) {
-        mp2[sn.body[j].y][sn.body[j].x] = sn.id == MYID ? 10 : -5;
+        map_snake[sn.body[j].y][sn.body[j].x] = sn.id == MYID ? 10 : -5;
       }
     }
     
@@ -799,8 +799,8 @@ void read_game_state(GameState &s) {
       auto &head = sn.body[0];
       for (auto dir : validDirections) {
         const auto [y, x] = Utils::nextPos({head.y, head.x}, dir);
-        if (Utils::boundCheck(y, x) && mp2[y][x] != -5) {
-          mp2[y][x] = -6; // 蛇头可能移动区域
+        if (Utils::boundCheck(y, x) && map_snake[y][x] != -5) {
+          map_snake[y][x] = -6; // 蛇头可能移动区域
         }
       }
       
@@ -808,8 +808,8 @@ void read_game_state(GameState &s) {
       auto &tail = sn.body[sn.length - 1];
       for (auto dir : validDirections) {
         const auto [y, x] = Utils::nextPos({tail.y, tail.x}, dir);
-        if (Utils::boundCheck(y, x) && mp2[y][x] != -5 && mp2[y][x] != -6) {
-          mp2[y][x] = -7; // 尾部可能移动区域
+        if (Utils::boundCheck(y, x) && map_snake[y][x] != -5 && map_snake[y][x] != -6) {
+          map_snake[y][x] = -7; // 尾部可能移动区域
         }
       }
     }
@@ -882,16 +882,16 @@ unordered_set<Direction> basicIllegalCheck(const GameState &state) {
         }
         
         // 墙检查 - 任何情况下都不能穿墙
-        if (mp[y][x] == -4) { illegals.insert(dir); continue; }
+        if (map_item[y][x] == -4) { illegals.insert(dir); continue; }
         
         // 陷阱检查 - 常规情况下不去陷阱
-        if (mp[y][x] == -2) { illegals.insert(dir); continue; }
+        if (map_item[y][x] == -2) { illegals.insert(dir); continue; }
         
         // 蛇身检查 - 常规情况下不能穿过蛇身
-        if (mp2[y][x] == -5 && self.shield_time < 2) { illegals.insert(dir); continue; }
+        if (map_snake[y][x] == -5 && self.shield_time < 2) { illegals.insert(dir); continue; }
         
         // 危险区域检查 - 蛇头/尾可能移动区域
-        if ((mp2[y][x] == -6 || mp2[y][x] == -7) && self.shield_time < 2) { 
+        if ((map_snake[y][x] == -6 || map_snake[y][x] == -7) && self.shield_time < 2) { 
             illegals.insert(dir); continue; 
         }
     }
@@ -930,10 +930,10 @@ unordered_set<Direction> emergencyIllegalCheck(const GameState &state) {
         }
         
         // 墙检查 - 紧急情况下仍不能穿墙
-        if (mp[y][x] == -4) { illegals.insert(dir); continue; }
+        if (map_item[y][x] == -4) { illegals.insert(dir); continue; }
         
         // 蛇身检查 - 紧急情况下放宽条件
-        if (mp2[y][x] == -5) {
+        if (map_snake[y][x] == -5) {
             // 如果有足够护盾或能开护盾，可以考虑穿过
             if (!(self.shield_time >= 2 || (self.shield_cd == 0 && self.score > 20) ||
                 state.remaining_ticks >= 255 - 9 + 2)) { 
@@ -974,7 +974,7 @@ unordered_set<Direction> illegalMove(const GameState &state, int look_ahead = 3)
             const auto [exit_y, exit_x] = Utils::nextPos({ny, nx}, exit_dir);
             // 检查是否是有效出口(在界内，不是墙，不是蛇身，在安全区)
             if (Utils::boundCheck(exit_y, exit_x) && 
-                mp[exit_y][exit_x] != -4 && mp2[exit_y][exit_x] != -5 &&
+                map_item[exit_y][exit_x] != -4 && map_snake[exit_y][exit_x] != -5 &&
                 exit_x >= state.current_safe_zone.x_min && exit_x <= state.current_safe_zone.x_max && 
                 exit_y >= state.current_safe_zone.y_min && exit_y <= state.current_safe_zone.y_max) {
                 safe_exits++;
@@ -1067,7 +1067,7 @@ namespace Strategy
                 const auto [ny, nx] = Utils::nextPos(pos, dir);
                 
                 // 检查是否越界或者是障碍物
-                if (!Utils::boundCheck(ny, nx) || mp[ny][nx] == -4 || mp2[ny][nx] == -5) continue;
+                if (!Utils::boundCheck(ny, nx) || map_item[ny][nx] == -4 || map_snake[ny][nx] == -5) continue;
                 
                 string next = Utils::idx2str({ny, nx});
                 if (visited.find(next) == visited.end()) { visited.insert(next); q.push({{ny, nx}, depth + 1}); }
@@ -1367,11 +1367,11 @@ namespace Strategy
         // 检查周围有多少墙或障碍物
         for (auto dir : validDirections) {
             const auto [ny, nx] = Utils::nextPos({sy, sx}, dir);
-            if (!Utils::boundCheck(ny, nx) || mp[ny][nx] == -4) {
+            if (!Utils::boundCheck(ny, nx) || map_item[ny][nx] == -4) {
                 wall_count++; // 墙或边界
-            } else if (mp2[ny][nx] == -5) {
+            } else if (map_snake[ny][nx] == -5) {
                 wall_count++; // 蛇身体部分，完全阻挡
-            } else if (mp2[ny][nx] == -6 || mp2[ny][nx] == -7) {
+            } else if (map_snake[ny][nx] == -6 || map_snake[ny][nx] == -7) {
                 danger_direction_count++; // 危险方向（蛇头/尾可能移动区域）
             } else {
                 // 记录可能的出口方向
@@ -1431,11 +1431,11 @@ namespace Strategy
         if (terrain_risk.risk_score <= -1800) return terrain_risk.risk_score;
         
         // 处理陷阱的情况
-        if (mp[sy][sx] == -2 && !terrain_risk.is_bottleneck) { // 只有当不是瓶颈时才考虑陷阱
+        if (map_item[sy][sx] == -2 && !terrain_risk.is_bottleneck) { // 只有当不是瓶颈时才考虑陷阱
             // 使用专门的陷阱评估函数
             score = evaluateTrap(state, sy, sx);
-        } else if (mp[sy][sx] == -2 && terrain_risk.is_bottleneck && 
-                   mp2[sy][sx] != -5 && mp2[sy][sx] != -6 && mp2[sy][sx] != -7) {
+        } else if (map_item[sy][sx] == -2 && terrain_risk.is_bottleneck && 
+                   map_snake[sy][sx] != -5 && map_snake[sy][sx] != -6 && map_snake[sy][sx] != -7) {
             // 拐角陷阱，但非紧急情况
             score = -500; // 非紧急情况下尽量避免
             
@@ -1445,7 +1445,7 @@ namespace Strategy
             for (auto dir : validDirections) {
                 const auto [next_y, next_x] = Utils::nextPos({head.y, head.x}, dir);
                 if (Utils::boundCheck(next_y, next_x)) {
-                    if (mp[next_y][next_x] != -4 && mp2[next_y][next_x] != -5 &&
+                    if (map_item[next_y][next_x] != -4 && map_snake[next_y][next_x] != -5 &&
                         next_x >= state.current_safe_zone.x_min && next_x <= state.current_safe_zone.x_max && 
                         next_y >= state.current_safe_zone.y_min && next_y <= state.current_safe_zone.y_max) {
                         is_emergency = false;
@@ -1514,14 +1514,14 @@ namespace Strategy
             }
             
             // 获取食物基础价值
-            int base_value = mp[y][x];
+            int base_value = map_item[y][x];
             
             // 计算到蛇头的距离
                 const auto &snake_head = state.get_self().get_head();
                 int head_dist = abs(snake_head.y - y) + abs(snake_head.x - x);
                 
             // 使用新的辅助函数评估食物价值
-            double num = (mp[y][x] != 0 && mp[y][x] != -2 && !can_reach) ? 0 : 
+            double num = (map_item[y][x] != 0 && map_item[y][x] != -2 && !can_reach) ? 0 : 
                         evaluateFoodValue(state, y, x, base_value, head_dist);
             
             // 计算位置权重
@@ -1562,7 +1562,7 @@ namespace Strategy
             }
             
             // 考虑竞争因素调整权重
-            if (mp[y][x] != -2) { // 不是陷阱
+            if (map_item[y][x] != -2) { // 不是陷阱
                 // 强化竞争因素评估
                 float competition_factor = 1.0f;
                 const auto &self_head = state.get_self().get_head();
@@ -1576,9 +1576,9 @@ namespace Strategy
                         // 如果敌方蛇更近，竞争系数降低
                         if (dist < self_distance) {
                             // 对高价值尸体的竞争调整
-                            if (mp[y][x] >= 10) { // 极高价值尸体
+                            if (map_item[y][x] >= 10) { // 极高价值尸体
                                 competition_factor *= (self_distance <= 6) ? 0.95f : 0.85f;
-                            } else if (mp[y][x] >= 5) { // 高价值尸体
+                            } else if (map_item[y][x] >= 5) { // 高价值尸体
                                 competition_factor *= (self_distance <= 4) ? 0.90f : 0.80f;
                             } else {
                                 competition_factor *= 0.8f; // 从0.7提高到0.8，减轻普通食物竞争惩罚
@@ -1586,7 +1586,7 @@ namespace Strategy
                         }
                         // 如果敌方蛇距离相近，轻微降低价值
                         else if (dist <= self_distance + 2) {
-                            if (mp[y][x] >= 8) { // 对高分尸体，竞争性调整
+                            if (map_item[y][x] >= 8) { // 对高分尸体，竞争性调整
                                 competition_factor *= (self_distance <= 6) ? 0.98f : 0.95f;
                             } else {
                                 competition_factor *= 0.9f; // 普通食物降低价值
@@ -1608,9 +1608,9 @@ namespace Strategy
                 if (!Utils::boundCheck(next_y, next_x)) continue; // 越界
                 
                 // 检查障碍物
-                if (mp[next_y][next_x] == -4 || mp2[next_y][next_x] == -5) {
+                if (map_item[next_y][next_x] == -4 || map_snake[next_y][next_x] == -5) {
                     // 墙或蛇身
-                    if (layer == 1 && mp[next_y][next_x] == -4) score -= 10; // 靠近墙的惩罚
+                    if (layer == 1 && map_item[next_y][next_x] == -4) score -= 10; // 靠近墙的惩罚
                 } else {
                     // 加入待访问队列
                     string neighbour = Utils::idx2str(make_pair(next_y, next_x));
@@ -1637,7 +1637,7 @@ namespace Strategy
         // 检查四个方向
         for (auto dir : validDirections) {
             const auto [ny, nx] = Utils::nextPos({y, x}, dir);
-            if (!Utils::boundCheck(ny, nx) || mp[ny][nx] == -4 || mp2[ny][nx] == -5) {
+            if (!Utils::boundCheck(ny, nx) || map_item[ny][nx] == -4 || map_snake[ny][nx] == -5) {
                 wall_count++; // 墙或蛇身
             } else {
                 adjacent_cells.push_back({ny, nx});
@@ -1696,11 +1696,11 @@ namespace Strategy
         }
       
         // 检查出口位置的安全性
-        if (mp2[next_y][next_x] == -5 || mp2[next_y][next_x] == -6) {
+        if (map_snake[next_y][next_x] == -5 || map_snake[next_y][next_x] == -6) {
             return -5000; // 危险拐角：出口处有蛇身或蛇头威胁区域
         }
       
-        if (mp[next_y][next_x] == -2) {
+        if (map_item[next_y][next_x] == -2) {
             return -50; // 陷阱拐角：出口处有陷阱
         }
       
@@ -1724,7 +1724,7 @@ namespace Strategy
             const auto [y, x] = Utils::nextPos({trap_y, trap_x}, dir);
             // 有效出口：在界内，不是墙，不是蛇身，不是另一个陷阱
             if (Utils::boundCheck(y, x) && 
-                mp[y][x] != -4 && mp2[y][x] != -5 && mp[y][x] != -2) {
+                map_item[y][x] != -4 && map_snake[y][x] != -5 && map_item[y][x] != -2) {
                 exits++;
                 exit_points.push_back({y, x});
             }
@@ -1783,7 +1783,7 @@ namespace Strategy
             const auto [next_y, next_x] = Utils::nextPos({head.y, head.x}, dir);
             if (Utils::boundCheck(next_y, next_x)) {
                 // 检查是否为障碍（墙、蛇身，但不包括陷阱）
-                if (mp[next_y][next_x] != -4 && mp2[next_y][next_x] != -5 && 
+                if (map_item[next_y][next_x] != -4 && map_snake[next_y][next_x] != -5 && 
                     next_x >= state.current_safe_zone.x_min && next_x <= state.current_safe_zone.x_max && 
                     next_y >= state.current_safe_zone.y_min && next_y <= state.current_safe_zone.y_max) {
                     is_emergency = false;
@@ -1804,7 +1804,7 @@ namespace Strategy
         int test = cornerEval(y, x, fy, fx);
         if (test != -10000) { // 是拐角位置
             if (test == -5000) return -50000; // 危险拐角，强烈避免
-            if (test == -50) mp[y][x] = -9; // 标记陷阱拐角
+            if (test == -50) map_item[y][x] = -9; // 标记陷阱拐角
         }
         
         // 安全区评分 - 考虑边界和蛇密度
@@ -2064,7 +2064,7 @@ namespace Strategy
             
             // 检查是否是有效出口(在界内，不是墙，不是蛇身，在安全区)
             if (Utils::boundCheck(ny, nx) && 
-                mp[ny][nx] != -4 && mp2[ny][nx] != -5 &&
+                map_item[ny][nx] != -4 && map_snake[ny][nx] != -5 &&
                 nx >= state.current_safe_zone.x_min && nx <= state.current_safe_zone.x_max && 
                 ny >= state.current_safe_zone.y_min && ny <= state.current_safe_zone.y_max) {
                 safe_exits++;
@@ -2083,7 +2083,7 @@ namespace Strategy
             const auto [ny, nx] = Utils::nextPos({pos.y, pos.x}, dir);
             
             // 检查位置有效性
-            if (!Utils::boundCheck(ny, nx) || mp[ny][nx] == -4 || mp2[ny][nx] == -5) continue; // 无效位置
+            if (!Utils::boundCheck(ny, nx) || map_item[ny][nx] == -4 || map_snake[ny][nx] == -5) continue; // 无效位置
             
             // 检查位置是否在安全区内
             if (nx < state.current_safe_zone.x_min || nx > state.current_safe_zone.x_max || 
@@ -2097,7 +2097,7 @@ namespace Strategy
             score += exits * 100; // 出口越多越好
             
             // 避免陷阱
-            if (mp[ny][nx] == -2) score -= 300; // 陷阱惩罚
+            if (map_item[ny][nx] == -2) score -= 300; // 陷阱惩罚
             
             // 避开敌方蛇头附近
             for (const auto &snake : state.snakes) {
@@ -2128,7 +2128,7 @@ namespace Strategy
         // 复制墙体
         for (int i = 0; i < MAXM; i++) {
             for (int j = 0; j < MAXN; j++) {
-                if (mp[i][j] == -4) map_copy[i][j] = -4; // 墙
+                if (map_item[i][j] == -4) map_copy[i][j] = -4; // 墙
             }
         }
         
@@ -2162,7 +2162,7 @@ namespace Strategy
             if (exits == 2) risk -= 100;   // 两个出口，中等风险
             
             // 检查当前位置是否有陷阱
-            if (mp[current.y][current.x] == -2) risk -= 200; // 陷阱惩罚
+            if (map_item[current.y][current.x] == -2) risk -= 200; // 陷阱惩罚
             
             // 检查当前位置是否安全
             auto terrain = analyzeTerrainRisk(state, current.y, current.x);
@@ -2240,7 +2240,7 @@ namespace Strategy
                 if (!Utils::boundCheck(ny, nx)) continue;
                 
                 // 检查是否为墙或蛇身
-                if (mp[ny][nx] == -4 || mp2[ny][nx] == -5) continue;
+                if (map_item[ny][nx] == -4 || map_snake[ny][nx] == -5) continue;
                 
                 // 新的点
                 Point next = {ny, nx};
@@ -2253,10 +2253,10 @@ namespace Strategy
                 int new_g = g + 1;
                 
                 // 额外考虑陷阱成本
-                if (mp[ny][nx] == -2) new_g += 3;
+                if (map_item[ny][nx] == -2) new_g += 3;
                 
                 // 考虑蛇头威胁区域成本
-                if (mp2[ny][nx] == -6) new_g += 2;
+                if (map_snake[ny][nx] == -6) new_g += 2;
                 
                 // 计算f值（总估计成本）
                 int new_f = new_g + h(next, target);
@@ -2476,7 +2476,7 @@ namespace Strategy
         int x = point.x, y = point.y;
         
         // 陷阱检查
-        if (mp[y][x] == -2) {
+        if (map_item[y][x] == -2) {
             // 使用现有的陷阱评估函数
             risk = evaluateTrap(state, y, x);
             
