@@ -16,7 +16,8 @@ using namespace std;
 // 常量
 constexpr int MAXN = 40; constexpr int MAXM = 30;
 constexpr int MAX_TICKS = 256; constexpr int MYID = 2023202295; // 此处替换为你的学号！
-constexpr int EmptyIdx = -1;     // 空位置标识
+// 空位置标识（如果需要）
+// constexpr int EmptyIdx = -1;
 constexpr int SHIELD_COMMAND = 4; // 护盾指令值
 
 enum class Direction { LEFT, UP, RIGHT, DOWN };
@@ -24,7 +25,17 @@ enum class Direction { LEFT, UP, RIGHT, DOWN };
 const vector<Direction> validDirections{Direction::UP, Direction::DOWN, Direction::LEFT, Direction::RIGHT};
 
 // 将类型定义放到最前面
-struct Point { int y, x; };
+struct Point { 
+    int y, x;
+
+    bool operator<(const Point& other) const {
+        return y < other.y || (y == other.y && x < other.x);
+    }
+    
+    bool operator==(const Point& other) const {
+        return y == other.y && x == other.x;
+    }
+};
 
 struct Item { Point pos; int value; int lifetime; };
 
@@ -69,6 +80,24 @@ namespace Strategy {
     Point findBestNextStep(const GameState &state, const Point &pos);
     vector<vector<int>> makeMapSnapshot(const GameState &state);
     double simulateMovementRisk(const GameState &state, int start_y, int start_x, int steps);
+    
+    // 新增路径安全评估框架相关声明
+    struct PathSafetyEvaluation {
+        double safety_score;    // 综合安全评分
+        bool is_safe;           // 是否安全
+        int safe_steps;         // 安全步数
+        vector<pair<int, int>> risky_points; // 危险点位置
+        
+        // 默认构造为不安全路径
+        PathSafetyEvaluation() : safety_score(-1000), is_safe(false), safe_steps(0) {}
+    };
+    
+    PathSafetyEvaluation evaluatePathSafety(const GameState &state, const Point &start, const Point &target, int look_ahead = 8);
+    vector<Point> findPath(const GameState &state, const Point &start, const Point &target);
+    double checkPointSafeZoneRisk(const GameState &state, const Point &point, int step_idx);
+    pair<double, bool> checkTerrainRisk(const GameState &state, const Point &point);
+    double checkSnakeDensityRisk(const GameState &state, const Point &point, int step_idx);
+    double checkSpecialTerrainRisk(const GameState &state, const Point &point);
 }
 
 namespace Utils
@@ -174,7 +203,8 @@ static bool is_chest_target = false; // 是否锁定宝箱
 // 目标锁定函数
 void lock_on_target(const GameState &state) {
     const auto &self = state.get_self();
-    const auto &head = self.get_head();
+    // 注释掉未使用的head变量
+    // const auto &head = self.get_head();
   
     // 更新锁定状态
     if (target_lock_time > 0) {
@@ -211,14 +241,24 @@ void lock_on_target(const GameState &state) {
             };
           
             for (const auto &chest : state.chests) {
-                // 评估宝箱
+                // 评估宝箱，使用基于路径安全性的目标评估
                 auto eval = Strategy::evaluateTarget(state, chest.pos, chest.score, true);
                 
-                // 选择价值最高且安全的宝箱，或者在没有安全选择时选择价值最高的
-                if (eval.is_safe && (best_chest.position.x == -1 || eval.value > best_chest.value)) {
-                    best_chest = eval;
-                } else if (!best_chest.is_safe && eval.value > best_chest.value) {
-                    best_chest = eval;
+                // 更智能的宝箱选择策略：优先考虑安全的宝箱
+                if (eval.is_safe) {
+                    if (best_chest.position.x == -1 || !best_chest.is_safe || eval.value > best_chest.value) {
+                        best_chest = eval;
+                    }
+                } 
+                // 次优先：不安全但高价值的宝箱
+                else if (!best_chest.is_safe && eval.value > best_chest.value) {
+                    // 使用路径安全评估来确认风险程度
+                    auto path_safety = Strategy::evaluatePathSafety(state, self.get_head(), chest.pos);
+                    
+                    // 即使路径不安全，但如果风险可控且价值显著更高，也可考虑
+                    if (path_safety.safety_score > -1200 || eval.value > best_chest.value * 1.5) {
+                        best_chest = eval;
+                    }
                 }
             }
             
@@ -226,10 +266,24 @@ void lock_on_target(const GameState &state) {
             if (best_chest.position.x != -1) {
                 current_target = best_chest.position;
                 target_value = best_chest.value;
-                target_lock_time = min(best_chest.distance + 10, 30); // 给足够时间去宝箱
+                
+                // 根据路径安全性调整锁定时间
+                int base_lock_time = min(best_chest.distance + 10, 30);
+                if (best_chest.is_safe) {
+                    target_lock_time = base_lock_time; // 安全路径，标准锁定时间
+                } else {
+                    // 不安全路径，根据安全评分缩短锁定时间
+                    auto path_safety = Strategy::evaluatePathSafety(state, self.get_head(), best_chest.position);
+                    if (path_safety.safety_score < -1000) {
+                        target_lock_time = min(base_lock_time, 15); // 高风险路径，缩短锁定时间
+                    } else {
+                        target_lock_time = min(base_lock_time, 20); // 中等风险路径
+                    }
+                }
+                
                 is_chest_target = true;
               
-                // 如果钥匙即将掉落，缩短锁定时间
+                // 如果钥匙即将掉落，进一步缩短锁定时间
                 for (const auto &key : state.keys) {
                     if (key.holder_id == MYID) {
                         if (key.remaining_time < best_chest.distance) {
@@ -276,14 +330,30 @@ void lock_on_target(const GameState &state) {
             for (const auto &key : state.keys) {
                 // 只考虑地图上的钥匙
                 if (key.holder_id == -1) {
-                    // 评估钥匙
+                    // 使用改进后的目标评估，以40.0作为基础价值
                     auto eval = Strategy::evaluateTarget(state, key.pos, 40.0, false);
                     
-                    // 选择价值最高且安全的钥匙，或者在没有安全选择时选择价值最高的
-                    if (eval.is_safe && (best_key.position.x == -1 || eval.value > best_key.value)) {
-                        best_key = eval;
-                    } else if (!best_key.is_safe && eval.value > best_key.value) {
-                        best_key = eval;
+                    // 优先考虑安全的钥匙
+                    if (eval.is_safe) {
+                        if (best_key.position.x == -1 || !best_key.is_safe || eval.value > best_key.value) {
+                            best_key = eval;
+                        }
+                    } 
+                    // 次优先：不安全但更接近且价值高的钥匙
+                    else if (!best_key.is_safe && 
+                            (eval.value > best_key.value || 
+                             (eval.value >= best_key.value * 0.8 && eval.distance < best_key.distance * 0.7))) {
+                        
+                        // 使用路径安全评估来确认风险程度
+                        auto path_safety = Strategy::evaluatePathSafety(state, self.get_head(), key.pos);
+                        
+                        // 如果路径风险可控或比当前备选风险更低，考虑这个钥匙
+                        if (path_safety.safety_score > -1000 || 
+                            (best_key.position.x != -1 && 
+                             path_safety.safety_score > Strategy::evaluatePathSafety(
+                                 state, self.get_head(), best_key.position).safety_score)) {
+                            best_key = eval;
+                        }
                     }
                 }
             }
@@ -292,8 +362,41 @@ void lock_on_target(const GameState &state) {
             if (best_key.position.x != -1) {
                 current_target = best_key.position;
                 target_value = best_key.value;
-                target_lock_time = min(best_key.distance + 5, 20);  // 给予足够的时间去拿钥匙
+                
+                // 根据路径安全性调整锁定时间
+                int base_lock_time = min(best_key.distance + 5, 20);
+                if (best_key.is_safe) {
+                    target_lock_time = base_lock_time; // 安全路径，标准锁定时间
+                } else {
+                    // 不安全路径，根据安全评分缩短锁定时间
+                    auto path_safety = Strategy::evaluatePathSafety(state, self.get_head(), best_key.position);
+                    target_lock_time = min(base_lock_time, (path_safety.safety_score < -800) ? 10 : 15); 
+                }
+                
                 is_key_target = true;
+                
+                // 检查是否有宝箱，如果有，预留时间从钥匙到宝箱
+                if (!state.chests.empty()) {
+                    Point nearest_chest = {-1, -1};
+                    int min_chest_dist = INT_MAX;
+                    
+                    // 寻找最近的宝箱
+                    for (const auto &chest : state.chests) {
+                        int chest_dist = abs(chest.pos.y - best_key.position.y) + 
+                                        abs(chest.pos.x - best_key.position.x);
+                        if (chest_dist < min_chest_dist) {
+                            min_chest_dist = chest_dist;
+                            nearest_chest = chest.pos;
+                        }
+                    }
+                    
+                    // 如果有宝箱且路径相对安全，考虑预留足够时间前往宝箱
+                    if (nearest_chest.x != -1 && 
+                        Strategy::evaluatePathSafety(
+                            state, best_key.position, nearest_chest).safety_score > -1000) {
+                        target_lock_time = min(30, best_key.distance + min_chest_dist + 5);
+                    }
+                }
             }
         }
       
@@ -1366,27 +1469,45 @@ namespace Strategy
         // 安全性检查1: 安全区收缩
         if (Utils::willDisappearInShrink(state, target_pos.x, target_pos.y)) {
             result.is_safe = false;
+            result.value *= 0.2;
             return result; // 目标将消失，直接返回
         }
       
-        // 安全性检查2: 死胡同和瓶颈
-        auto dead_end = analyzeDeadEnd(state, target_pos.y, target_pos.x);
-        if (dead_end.is_dead_end) {
-            // 对宝箱尤其严格判断死胡同风险
-            if (is_chest && dead_end.risk_score < -500) {
-                result.is_safe = false;
-                result.value *= 0.3; // 大幅降低价值
-            } else {
-                // 根据风险程度降低价值
-                result.value *= (1.0 + dead_end.risk_score / 1000);
+        // 新增: 评估通往目标的路径安全性
+        int look_ahead = min(distance, 8); // 路径前瞻步数，不超过距离
+        auto path_safety = evaluatePathSafety(state, head, target_pos, look_ahead);
+        
+        // 根据路径安全性调整目标价值
+        if (!path_safety.is_safe) {
+            result.is_safe = false;
+            
+            // 根据危险程度降低价值
+            double danger_ratio = 1.0 - min(1.0, -path_safety.safety_score / 2000.0);
+            result.value *= danger_ratio;
+            
+            // 如果是极度危险的路径，几乎放弃该目标
+            if (path_safety.safety_score < -1500) {
+                result.value *= 0.1;
             }
+        }
+        
+        // 安全路径但仅能安全前进少数几步，也视为不安全
+        if (result.is_safe && path_safety.safe_steps < min(distance, 3)) {
+            result.is_safe = false;
+            result.value *= 0.5;
+        }
+        
+        // 宝箱比钥匙需要更高的安全标准
+        if (is_chest && path_safety.safety_score < -500) {
+            result.is_safe = false;
+            result.value *= 0.5;
         }
       
         // 竞争因素
         int closest_competitor_dist = INT_MAX;
       
         for (const auto &snake : state.snakes) {
-            if (snake.id != MYID) {
+            if (snake.id != MYID && snake.id != -1) {
                 int enemy_dist = abs(snake.get_head().y - target_pos.y) + 
                                 abs(snake.get_head().x - target_pos.x);
               
@@ -1544,6 +1665,264 @@ namespace Strategy
         
         return risk;
     }
+    
+    // A*寻路算法实现
+    vector<Point> findPath(const GameState &state, const Point &start, const Point &target) {
+        // 启发式函数：计算曼哈顿距离
+        auto h = [](const Point &p, const Point &target) {
+            return abs(p.y - target.y) + abs(p.x - target.x);
+        };
+        
+        // 优先队列用于A*算法，按f值（g+h）排序
+        // 存储格式：{f值, {g值, {点位置y, 点位置x}}}
+        priority_queue<pair<int, pair<int, Point>>, vector<pair<int, pair<int, Point>>>, greater<>> pq;
+        
+        // 记录已经访问的节点和每个点的前驱节点
+        unordered_map<string, bool> visited;
+        unordered_map<string, Point> parent;
+        
+        // 初始化起点
+        pq.push({h(start, target), {0, start}});
+        
+        // A*搜索
+        while (!pq.empty()) {
+            auto [f, gp] = pq.top();
+            auto [g, current] = gp;
+            pq.pop();
+            
+            // 生成当前点的唯一标识
+            string current_id = Utils::idx2str({current.y, current.x});
+            
+            // 如果已访问，跳过
+            if (visited[current_id]) continue;
+            visited[current_id] = true;
+            
+            // 如果到达目标，构建路径并返回
+            if (current.y == target.y && current.x == target.x) {
+                vector<Point> path;
+                Point p = current;
+                while (!(p.y == start.y && p.x == start.x)) {
+                    path.push_back(p);
+                    string p_id = Utils::idx2str({p.y, p.x});
+                    p = parent[p_id];
+                }
+                reverse(path.begin(), path.end());
+                return path;
+            }
+            
+            // 探索四个方向
+            for (auto dir : validDirections) {
+                const auto [ny, nx] = Utils::nextPos({current.y, current.x}, dir);
+                
+                // 检查是否越界
+                if (!Utils::boundCheck(ny, nx)) continue;
+                
+                // 检查是否为墙或蛇身
+                if (mp[ny][nx] == -4 || mp2[ny][nx] == -5) continue;
+                
+                // 新的点
+                Point next = {ny, nx};
+                string next_id = Utils::idx2str({ny, nx});
+                
+                // 如果已访问，跳过
+                if (visited[next_id]) continue;
+                
+                // 计算新的g值（距离起点的成本）
+                int new_g = g + 1;
+                
+                // 额外考虑陷阱成本
+                if (mp[ny][nx] == -2) new_g += 3;
+                
+                // 考虑蛇头威胁区域成本
+                if (mp2[ny][nx] == -6) new_g += 2;
+                
+                // 计算f值（总估计成本）
+                int new_f = new_g + h(next, target);
+                
+                // 更新队列
+                pq.push({new_f, {new_g, next}});
+                parent[next_id] = current;
+            }
+        }
+        
+        // 无法找到路径
+        return {};
+    }
+    
+    // 检查点位的安全区收缩风险
+    double checkPointSafeZoneRisk(const GameState &state, const Point &point, int step_idx) {
+        int x = point.x, y = point.y;
+        double risk = 0.0;
+        
+        int current_tick = MAX_TICKS - state.remaining_ticks;
+        int ticks_to_shrink = state.next_shrink_tick - current_tick;
+        
+        // 考虑步数和收缩时间的关系
+        // 如果我们预计在安全区收缩之前能到达该点，风险较低
+        int estimated_arrival_tick = current_tick + step_idx;
+        
+        // 如果点在当前安全区外，立即给高风险
+        if (x < state.current_safe_zone.x_min || x > state.current_safe_zone.x_max ||
+            y < state.current_safe_zone.y_min || y > state.current_safe_zone.y_max) {
+            return -5000;  // 极高风险
+        }
+        
+        // 如果即将收缩（20个tick内）
+        if (ticks_to_shrink >= 0 && ticks_to_shrink <= 20) {
+            // 如果预计到达时间晚于收缩时间，且点在下一个安全区外
+            if (estimated_arrival_tick >= state.next_shrink_tick && 
+                (x < state.next_safe_zone.x_min || x > state.next_safe_zone.x_max ||
+                 y < state.next_safe_zone.y_min || y > state.next_safe_zone.y_max)) {
+                
+                // 安全区外位置风险大幅增加
+                risk = -3000;
+                
+                // 收缩越近风险越高
+                if (ticks_to_shrink <= 5) risk -= 2000;
+                else if (ticks_to_shrink <= 10) risk -= 1000;
+            }
+            // 如果点在下一个安全区外但预计能在收缩前到达
+            else if (x < state.next_safe_zone.x_min || x > state.next_safe_zone.x_max ||
+                     y < state.next_safe_zone.y_min || y > state.next_safe_zone.y_max) {
+                
+                // 风险值取决于到达时间和收缩时间的差距
+                int margin = state.next_shrink_tick - estimated_arrival_tick;
+                if (margin <= 3) risk = -1500;  // 时间很紧，高风险
+                else if (margin <= 10) risk = -500;  // 中等风险
+                else risk = -200;  // 较低风险
+            }
+        }
+        
+        return risk;
+    }
+    
+    // 检查点位的地形风险（死胡同、瓶颈）
+    pair<double, bool> checkTerrainRisk(const GameState &state, const Point &point) {
+        // 复用已有的地形分析函数
+        TerrainAnalysis terrain = analyzeTerrainRisk(state, point.y, point.x);
+        
+        double risk = terrain.risk_score;
+        bool is_dangerous = terrain.is_dead_end || terrain.is_bottleneck;
+        
+        return {risk, is_dangerous};
+    }
+    
+    // 检查点位的蛇密度风险
+    double checkSnakeDensityRisk(const GameState &state, const Point &point, int step_idx) {
+        double risk = 0.0;
+        int x = point.x, y = point.y;
+        
+        // 计算附近的敌方蛇数量
+        int nearby_snakes = 0;
+        int very_close_snakes = 0;
+        
+        for (const auto &snake : state.snakes) {
+            if (snake.id != MYID && snake.id != -1) {
+                const Point &enemy_head = snake.get_head();
+                int dist = abs(enemy_head.y - y) + abs(enemy_head.x - x);
+                
+                // 敌方蛇头在非常近的位置
+                if (dist <= 2) very_close_snakes++;
+                
+                // 敌方蛇头在较近的位置
+                if (dist <= 5) nearby_snakes++;
+            }
+        }
+        
+        // 计算风险值
+        if (very_close_snakes > 0) {
+            // 非常近的敌方蛇，高风险
+            risk -= 800 * very_close_snakes;
+        }
+        
+        if (nearby_snakes > 0) {
+            // 近距离敌方蛇，中等风险
+            risk -= 200 * nearby_snakes;
+        }
+        
+        // 考虑步数因素 - 越早遇到敌方蛇风险越高
+        if (risk < 0 && step_idx <= 3) {
+            risk *= 1.5; // 前3步遇到敌方蛇，风险增加50%
+        }
+        
+        return risk;
+    }
+    
+    // 检查点位的特殊地形风险（如陷阱）
+    double checkSpecialTerrainRisk(const GameState &state, const Point &point) {
+        double risk = 0.0;
+        int x = point.x, y = point.y;
+        
+        // 陷阱检查
+        if (mp[y][x] == -2) {
+            // 使用现有的陷阱评估函数
+            risk = evaluateTrap(state, y, x);
+            
+            // 确保评估值是负数（表示风险）
+            if (risk > 0) risk = 0;
+        }
+        
+        return risk;
+    }
+    
+    // 路径安全评估主函数
+    PathSafetyEvaluation evaluatePathSafety(const GameState &state, const Point &start, const Point &target, int look_ahead) {
+        PathSafetyEvaluation result;
+        
+        // 使用A*算法规划路径
+        vector<Point> path = findPath(state, start, target);
+        if (path.empty()) {
+            return result; // 无法到达，返回默认不安全评估
+        }
+        
+        // 初始化为安全路径
+        result.safety_score = 0;
+        result.is_safe = true;
+        result.safe_steps = path.size();
+        
+        // 评估路径上的每个点
+        for (int i = 0; i < min((int)path.size(), look_ahead); i++) {
+            const Point &point = path[i];
+            double point_safety = 0;
+            
+            // 1. 检查安全区收缩风险
+            double safe_zone_risk = checkPointSafeZoneRisk(state, point, i);
+            point_safety += safe_zone_risk;
+            
+            // 2. 检查死胡同/瓶颈风险
+            auto [terrain_risk, is_dangerous_terrain] = checkTerrainRisk(state, point);
+            point_safety += terrain_risk;
+            
+            // 3. 检查蛇密度风险
+            double snake_density_risk = checkSnakeDensityRisk(state, point, i);
+            point_safety += snake_density_risk;
+            
+            // 4. 特殊地形风险(如陷阱)
+            double special_terrain_risk = checkSpecialTerrainRisk(state, point);
+            point_safety += special_terrain_risk;
+            
+            // 综合评估点位安全性
+            result.safety_score += point_safety;
+            
+            // 如果某个点极度危险，记录并降低整体安全性
+            if (point_safety < -500) {
+                result.risky_points.push_back({point.y, point.x});
+                result.safe_steps = min(result.safe_steps, i);
+                
+                // 如果是前3步就有高危险，整条路径视为不安全
+                if (i < 3 && point_safety < -1000) {
+                    result.is_safe = false;
+                }
+            }
+        }
+        
+        // 路径整体安全性评估
+        if (result.safety_score < -2000) {
+            result.is_safe = false;
+        }
+        
+        return result;
+    }
 }
 
 // 添加到judge函数之前
@@ -1634,21 +2013,62 @@ int judge(const GameState &state)
     if ((state.get_self().has_key && is_chest_target && current_target.x != -1 && current_target.y != -1) ||
         (!state.get_self().has_key && is_key_target && current_target.x != -1 && current_target.y != -1)) {
         
-        // 计算前往目标的首选方向
-        vector<Direction> preferred_dirs;
         const auto &head = state.get_self().get_head();
         
-        // 水平方向
-        if (head.x > current_target.x) preferred_dirs.push_back(Direction::LEFT);
-        else if (head.x < current_target.x) preferred_dirs.push_back(Direction::RIGHT);
+        // 使用路径安全评估框架进行路径规划
+        auto path_safety = Strategy::evaluatePathSafety(state, head, current_target);
+        auto path = Strategy::findPath(state, head, current_target);
         
-        // 垂直方向
-        if (head.y > current_target.y) preferred_dirs.push_back(Direction::UP);
-        else if (head.y < current_target.y) preferred_dirs.push_back(Direction::DOWN);
-        
-        Direction best_dir = chooseBestDirection(state, preferred_dirs);
-        if (best_dir != Direction::UP || state.get_self().direction == 1) {
-            return Utils::dir2num(best_dir);
+        // 如果找到了路径
+        if (!path.empty()) {
+            // 获取下一步位置
+            const Point &next_pos = path[0];
+            
+            // 计算移动方向
+            Direction move_dir;
+            if (next_pos.y < head.y) move_dir = Direction::UP;
+            else if (next_pos.y > head.y) move_dir = Direction::DOWN;
+            else if (next_pos.x < head.x) move_dir = Direction::LEFT;
+            else move_dir = Direction::RIGHT;
+            
+            // 检查移动是否合法
+            unordered_set<Direction> illegals = illegalMove(state);
+            if (illegals.count(move_dir) == 0) {
+                return Utils::dir2num(move_dir);
+            }
+            
+            // 如果A*路径的第一步不合法，回退到传统方法
+            // 计算前往目标的首选方向
+            vector<Direction> preferred_dirs;
+            
+            // 水平方向
+            if (head.x > current_target.x) preferred_dirs.push_back(Direction::LEFT);
+            else if (head.x < current_target.x) preferred_dirs.push_back(Direction::RIGHT);
+            
+            // 垂直方向
+            if (head.y > current_target.y) preferred_dirs.push_back(Direction::UP);
+            else if (head.y < current_target.y) preferred_dirs.push_back(Direction::DOWN);
+            
+            Direction best_dir = chooseBestDirection(state, preferred_dirs);
+            if (best_dir != Direction::UP || state.get_self().direction == 1) {
+                return Utils::dir2num(best_dir);
+            }
+        } else {
+            // 路径不存在，回退到传统方法
+            vector<Direction> preferred_dirs;
+            
+            // 水平方向
+            if (head.x > current_target.x) preferred_dirs.push_back(Direction::LEFT);
+            else if (head.x < current_target.x) preferred_dirs.push_back(Direction::RIGHT);
+            
+            // 垂直方向
+            if (head.y > current_target.y) preferred_dirs.push_back(Direction::UP);
+            else if (head.y < current_target.y) preferred_dirs.push_back(Direction::DOWN);
+            
+            Direction best_dir = chooseBestDirection(state, preferred_dirs);
+            if (best_dir != Direction::UP || state.get_self().direction == 1) {
+                return Utils::dir2num(best_dir);
+            }
         }
     }
     
