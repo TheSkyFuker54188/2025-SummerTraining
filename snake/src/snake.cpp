@@ -268,7 +268,7 @@ namespace Strategy {
         
         // 最后5tick内不使用护盾
         if (state.remaining_ticks <= 5) {
-            return false;
+                return false;
         }
         
         // 1. 仅在生死攸关情形使用
@@ -3062,8 +3062,8 @@ bool enhancedFoodProcessByPriority(const GameState &state, int minValue, int max
             // 检查是否确实无路可走
             unordered_set<Direction> all_illegals = illegalMove(state);
             if (all_illegals.size() >= 3) { // 只有1个方向可走或没有方向可走
-                moveDirection = Direction::UP; // 特殊标记
-                return false; // 特殊返回值，需要在外部处理护盾
+            moveDirection = Direction::UP; // 特殊标记
+            return false; // 特殊返回值，需要在外部处理护盾
             }
         }
         
@@ -3076,20 +3076,31 @@ bool enhancedFoodProcessByPriority(const GameState &state, int minValue, int max
 // 前向声明统一食物处理函数
 bool processFoodWithDynamicPriority(const GameState &state, Direction& moveDirection);
 
+// 前向声明初始护盾阶段处理函数
+int handleInitialShieldPhase(const GameState &state, int current_tick);
+
 // 修改judge函数，整合所有安全性改进
 int judge(const GameState &state)
 {
     // 更新目标锁定状态
     lock_on_target(state);
-    
+  
     // 获取自适应配置
     Strategy::RiskAdaptiveConfig config = Strategy::getAdaptiveConfig(state);
-    
+  
     const auto &self = state.get_self();
     const auto &head = self.get_head();
-    
+  
     // 获取当前游戏阶段信息
     int current_tick = MAX_TICKS - state.remaining_ticks;
+    
+    // 初始护盾阶段判定 - 游戏前10刻且有护盾
+    bool is_initial_shield_phase = (current_tick < 10 && self.shield_time > 0);
+  
+    if (is_initial_shield_phase) {
+        return handleInitialShieldPhase(state, current_tick);
+    }
+  
     int ticks_to_shrink = state.next_shrink_tick - current_tick;
     bool is_near_shrink = (ticks_to_shrink >= 0 && ticks_to_shrink <= 20);
     bool is_emergency_shrink = is_near_shrink && ticks_to_shrink <= 5;
@@ -3168,7 +3179,7 @@ int judge(const GameState &state)
                         }
                         
                         if (is_truly_necessary) {
-                            return SHIELD_COMMAND;
+                        return SHIELD_COMMAND;
                         }
                     }
                     return Utils::dir2num(move_dir);
@@ -3191,7 +3202,7 @@ int judge(const GameState &state)
                         // 检查是否确实无路可走
                         unordered_set<Direction> all_illegals = illegalMove(state);
                         if (all_illegals.size() >= 3) { // 至少有3个方向不可走
-                            return SHIELD_COMMAND;
+                        return SHIELD_COMMAND;
                         }
                     }
                     return Utils::dir2num(best_dir);
@@ -3214,7 +3225,7 @@ int judge(const GameState &state)
                         // 检查是否确实无路可走
                         unordered_set<Direction> all_illegals = illegalMove(state);
                         if (all_illegals.size() >= 3) { // 至少有3个方向不可走
-                            return SHIELD_COMMAND;
+                        return SHIELD_COMMAND;
                         }
                     }
             return Utils::dir2num(best_dir);
@@ -3614,6 +3625,210 @@ bool processFoodWithDynamicPriority(const GameState &state, Direction& moveDirec
     }
     
     return false;  // 没有找到满足条件的食物
+}
+
+// 初始护盾阶段处理函数
+int handleInitialShieldPhase(const GameState &state, int current_tick) {
+    const auto &self = state.get_self();
+    const auto &head = self.get_head();
+  
+    // 阶段1: 攻击性获取(前7刻) - 直奔最高价值目标
+    if (current_tick < 7) {
+        // 构建加权评分的候选食物列表
+        vector<pair<Item, double>> candidate_foods;
+      
+        for (const auto &item : state.items) {
+            // 跳过陷阱
+            if (item.value == -2) continue;
+          
+            int dist = abs(head.y - item.pos.y) + abs(head.x - item.pos.x);
+          
+            // 计算基础价值
+            double base_value = 0;
+            if (item.value > 0) {  // 尸体
+                base_value = item.value * 15;  // 尸体价值权重高
+            } else if (item.value == -1) {  // 增长豆
+                base_value = 8;  // 增长豆也有价值
+            } else {
+                base_value = 1;  // 普通食物基础价值低
+            }
+          
+            // 距离因子 - 越近越好，指数衰减
+            double distance_factor = 10.0 / (1.0 + dist * 0.5);
+          
+            // 计算最终评分
+            double score = base_value * distance_factor;
+          
+            // 排除过远的食物
+            if (dist <= 12) {  // 最大搜索半径
+                candidate_foods.push_back({item, score});
+            }
+        }
+      
+        // 如果找到了候选食物，选择评分最高的
+        if (!candidate_foods.empty()) {
+            // 按评分排序
+            sort(candidate_foods.begin(), candidate_foods.end(),
+                [](const pair<Item, double> &a, const pair<Item, double> &b) {
+                    return a.second > b.second;
+                });
+          
+            const Item &best_food = candidate_foods[0].first;
+          
+            // 直线路径策略 - 完全不考虑安全性，直奔目标
+            vector<Direction> preferred_dirs;
+          
+            // 先考虑垂直方向(优先垂直移动)
+            if (head.y > best_food.pos.y) preferred_dirs.push_back(Direction::UP);
+            else if (head.y < best_food.pos.y) preferred_dirs.push_back(Direction::DOWN);
+          
+            // 再考虑水平方向
+            if (head.x > best_food.pos.x) preferred_dirs.push_back(Direction::LEFT);
+            else if (head.x < best_food.pos.x) preferred_dirs.push_back(Direction::RIGHT);
+          
+            // 有方向就走，无视障碍
+            if (!preferred_dirs.empty()) {
+                Direction best_dir = preferred_dirs[0];
+              
+                // 检查第一选择是否会导致出界或撞墙
+                const auto [ny, nx] = Utils::nextPos({head.y, head.x}, best_dir);
+                if (!Utils::boundCheck(ny, nx) || map_item[ny][nx] == -4) {
+                    // 如果有第二选择且合法，使用第二选择
+                    if (preferred_dirs.size() > 1) {
+                        const auto [ny2, nx2] = Utils::nextPos({head.y, head.x}, preferred_dirs[1]);
+                        if (Utils::boundCheck(ny2, nx2) && map_item[ny2][nx2] != -4) {
+                            best_dir = preferred_dirs[1];
+                        }
+                    }
+                }
+              
+                return Utils::dir2num(best_dir);
+            }
+        }
+    }
+    // 阶段2: 安全撤离(后3刻) - 前往空旷安全区域
+    else {
+        // 评估每个方向的安全性和空旷度
+        struct DirectionScore {
+            Direction dir;
+            int exits;        // 出口数量
+            double openness;  // 空旷度评分
+            int snake_count;  // 周围蛇的数量
+            bool has_food;    // 是否有食物
+          
+            // 综合评分
+            double score() const {
+                double base = openness * 2.0 + exits * 1.5 - snake_count * 3.0;
+                return has_food ? base * 1.2 : base;  // 有食物加成
+            }
+        };
+      
+        vector<DirectionScore> dir_scores;
+      
+        // 评估所有可能的方向
+        for (auto dir : validDirections) {
+            const auto [ny, nx] = Utils::nextPos({head.y, head.x}, dir);
+          
+            // 基础合法性检查
+            if (!Utils::boundCheck(ny, nx) || map_item[ny][nx] == -4) continue;
+            if (nx < state.current_safe_zone.x_min || nx > state.current_safe_zone.x_max ||
+                ny < state.current_safe_zone.y_min || ny > state.current_safe_zone.y_max) continue;
+          
+            // 计算出口数量 - 护盾消失后的安全移动选择
+            int exits = 0;
+            for (auto exit_dir : validDirections) {
+                const auto [ey, ex] = Utils::nextPos({ny, nx}, exit_dir);
+                if (Utils::boundCheck(ey, ex) && map_item[ey][ex] != -4 && map_snake[ey][ex] != -5) {
+                    exits++;
+                }
+            }
+          
+            // 计算空旷度 - 从该点BFS探索几步，计算可达点的数量
+            double openness = 0;
+            unordered_set<string> visited;
+            queue<pair<pair<int, int>, int>> q; // 位置和距离
+            q.push({{ny, nx}, 1});
+            visited.insert(Utils::idx2str({ny, nx}));
+          
+            while (!q.empty()) {
+                auto [pos, depth] = q.front();
+                q.pop();
+              
+                if (depth > 4) continue; // 只探索4步以内
+              
+                // 深度越浅的点贡献越大
+                openness += (5 - depth) * 0.5;
+              
+                // 继续探索
+                for (auto next_dir : validDirections) {
+                    const auto [next_y, next_x] = Utils::nextPos(pos, next_dir);
+                    string key = Utils::idx2str({next_y, next_x});
+                  
+                    if (Utils::boundCheck(next_y, next_x) && 
+                        map_item[next_y][next_x] != -4 && // 不是墙
+                        visited.find(key) == visited.end()) { // 未访问过
+                      
+                        q.push({{next_y, next_x}, depth + 1});
+                        visited.insert(key);
+                    }
+                }
+            }
+          
+            // 计算附近蛇的数量 - 避开竞争区域
+            int snake_count = 0;
+            for (const auto &snake : state.snakes) {
+                if (snake.id != MYID && snake.id != -1) { // 不是自己且有效
+                    int dist = abs(snake.get_head().y - ny) + abs(snake.get_head().x - nx);
+                    if (dist <= 5) { // 5步以内的蛇
+                        snake_count++;
+                        // 特别惩罚非常近的蛇
+                        if (dist <= 2) {
+                            snake_count += 2;
+                        }
+                    }
+                }
+            }
+          
+            // 检查是否有食物 - 在安全前提下优先考虑有食物的位置
+            bool has_food = map_item[ny][nx] > 0 || map_item[ny][nx] == -1;
+          
+            // 只有当出口至少2个时才考虑该方向
+            if (exits >= 2) {
+                dir_scores.push_back({dir, exits, openness, snake_count, has_food});
+            }
+        }
+      
+        // 如果有可行方向，选择综合评分最高的
+        if (!dir_scores.empty()) {
+            // 按综合评分排序
+            sort(dir_scores.begin(), dir_scores.end(), 
+                [](const DirectionScore &a, const DirectionScore &b) {
+                    return a.score() > b.score();
+                });
+          
+            // 选择评分最高的方向
+            return Utils::dir2num(dir_scores[0].dir);
+        }
+      
+        // 如果没有足够安全的位置，回退到基本安全检查
+        for (auto dir : validDirections) {
+            const auto [ny, nx] = Utils::nextPos({head.y, head.x}, dir);
+            if (Utils::boundCheck(ny, nx) && map_item[ny][nx] != -4 &&
+                nx >= state.current_safe_zone.x_min && nx <= state.current_safe_zone.x_max &&
+                ny >= state.current_safe_zone.y_min && ny <= state.current_safe_zone.y_max) {
+                return Utils::dir2num(dir); // 任何在界内且不是墙的位置
+            }
+        }
+    }
+  
+    // 如果所有特殊策略都无法应用，回退到标准行为
+    Direction food_dir = Direction::UP;
+    if (processFoodWithDynamicPriority(state, food_dir)) {
+        return Utils::dir2num(food_dir);
+    }
+  
+    // 最终回退 - 使用标准选择逻辑
+    return Utils::dir2num(chooseBestDirection(state));
 }
 
 int main() {
